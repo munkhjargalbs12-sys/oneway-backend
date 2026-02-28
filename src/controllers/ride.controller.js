@@ -5,6 +5,9 @@ const pool = require("../db");
    ===================================================== */
 exports.createRide = async (req, res) => {
   try {
+      console.log("🔥 CREATE RIDE BODY:", req.body);
+    console.log("🔥 POLYLINE VALUE:", req.body.polyline);
+
     const userId = req.user.id;
 
     const {
@@ -63,6 +66,7 @@ exports.getRides = async (req, res) => {
     const result = await pool.query(
       `SELECT 
          r.id,
+         r.status,
          r.ride_date,
          r.start_time,
          r.end_location,
@@ -77,10 +81,10 @@ exports.getRides = async (req, res) => {
        FROM rides r
        LEFT JOIN vehicles v ON r.vehicle_id = v.id
        LEFT JOIN users u ON r.user_id = u.id
-       WHERE r.status='active'
+       -- TEMP TEST: show all statuses; switch back to WHERE r.status='active' later
        ORDER BY r.ride_date ASC, r.start_time ASC`
     );
-
+    
     res.json(result.rows);
   } catch (err) {
     console.error("❌ getRides error:", err);
@@ -146,7 +150,7 @@ exports.getActiveRide = async (req, res) => {
 
     const result = await pool.query(
       `SELECT r.id,
-              r.end_location as to_location,
+              r.end_location,
               r.ride_date,
               r.start_time,
               v.brand,

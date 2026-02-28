@@ -8,6 +8,7 @@ const userRoutes = require("./routes/user.routes");
 const ratingRoutes = require("./routes/rating.routes");
 const vehicleRoutes = require("./routes/vehicle.routes");
 const notificationRoutes = require("./routes/notification.routes");
+const routeRoutes = require("./routes/route.routes");
 
 const app = express();
 
@@ -21,5 +22,6 @@ app.use("/users", userRoutes);
 app.use("/ratings", ratingRoutes);
 app.use("/vehicles", vehicleRoutes);
 app.use("/notifications", notificationRoutes);
+app.use("/route", routeRoutes); // 
 
 module.exports = app;

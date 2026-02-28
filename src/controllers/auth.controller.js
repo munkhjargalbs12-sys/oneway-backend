@@ -6,7 +6,8 @@ const pool = require("../db");
  * 🆕 Register
  */
 exports.register = async (req, res) => {
-  const { phone, password, name, role = "passenger", avatar } = req.body;
+  const { phone, password, name, role = "passenger", avatar_id, avatar } = req.body;
+  const resolvedAvatarId = avatar_id || avatar || "guy";
 
   // 🔎 Required
   if (!phone || !password || !name) {
@@ -47,7 +48,7 @@ exports.register = async (req, res) => {
       VALUES ($1, $2, $3, $4, $5)
       RETURNING id, phone, name, role, avatar_id
       `,
-      [phone, hash, name, role, avatar]
+      [phone, hash, name, role, resolvedAvatarId]
     );
 
     const user = rows[0];
@@ -113,7 +114,7 @@ exports.login = async (req, res) => {
         phone: user.phone,
         name: user.name,
         role: user.role,
-        avatar: user.avatar_id,
+        avatar_id: user.avatar_id,
         rating: user.rating,
       },
     });

@@ -23,6 +23,31 @@ exports.getMe = async (req, res) => {
   }
 };
 
+exports.getPublicById = async (req, res) => {
+  try {
+    const userId = Number(req.params.id);
+    if (!Number.isFinite(userId) || userId <= 0) {
+      return res.status(400).json({ message: "Invalid user id" });
+    }
+
+    const { rows } = await pool.query(
+      `SELECT id, name, avatar_id
+       FROM users
+       WHERE id = $1`,
+      [userId]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    res.json(rows[0]);
+  } catch (err) {
+    console.error("getPublicById error:", err);
+    res.status(500).json({ message: "Failed to get user" });
+  }
+};
+
 /**
  * 🖼 UPDATE avatar
  */
