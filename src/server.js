@@ -1,6 +1,5 @@
 require("dotenv").config();
 
-console.log("🔑 API KEY:", process.env.GOOGLE_MAPS_API_KEY);
 
 const app = require("./app");
 

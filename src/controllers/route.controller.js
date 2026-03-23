@@ -1,14 +1,18 @@
-
-
-
-
 exports.computeRoute = async (req, res) => {
-  console.log("🔥 /route HIT", req.body);
-
   try {
     const { start, end } = req.body;
 
-    if (!start?.lat || !start?.lng || !end?.lat || !end?.lng) {
+    const startLat = Number(start?.lat);
+    const startLng = Number(start?.lng);
+    const endLat = Number(end?.lat);
+    const endLng = Number(end?.lng);
+
+    if (
+      !Number.isFinite(startLat) ||
+      !Number.isFinite(startLng) ||
+      !Number.isFinite(endLat) ||
+      !Number.isFinite(endLng)
+    ) {
       return res.status(400).json({ error: "Invalid start or end" });
     }
 
@@ -25,16 +29,16 @@ exports.computeRoute = async (req, res) => {
           origin: {
             location: {
               latLng: {
-                latitude: start.lat,
-                longitude: start.lng,
+                latitude: startLat,
+                longitude: startLng,
               },
             },
           },
           destination: {
             location: {
               latLng: {
-                latitude: end.lat,
-                longitude: end.lng,
+                latitude: endLat,
+                longitude: endLng,
               },
             },
           },
@@ -45,13 +49,11 @@ exports.computeRoute = async (req, res) => {
 
     if (!response.ok) {
       const text = await response.text();
-      console.error("❌ Google API error:", text);
+      console.error("Google API error:", text);
       return res.status(500).json({ error: "Google Routes API error" });
     }
 
     const data = await response.json();
-
-    console.log("🟡 Google Routes response:", JSON.stringify(data, null, 2));
 
     if (!data.routes?.length) {
       return res.status(400).json({ error: "No routes" });
@@ -61,7 +63,7 @@ exports.computeRoute = async (req, res) => {
       polyline: data.routes[0].polyline.encodedPolyline,
     });
   } catch (err) {
-    console.error("❌ Route failed:", err);
+    console.error("Route failed:", err);
     res.status(500).json({ error: "Route failed" });
   }
 };

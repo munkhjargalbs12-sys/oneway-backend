@@ -1,13 +1,7 @@
 const pool = require("../db");
 
-/* =====================================================
-   🚗 CREATE RIDE
-   ===================================================== */
 exports.createRide = async (req, res) => {
   try {
-      console.log("🔥 CREATE RIDE BODY:", req.body);
-    console.log("🔥 POLYLINE VALUE:", req.body.polyline);
-
     const userId = req.user.id;
 
     const {
@@ -25,6 +19,14 @@ exports.createRide = async (req, res) => {
 
     if (!start || !end || !seats || !ride_date || !start_time || !vehicle_id) {
       return res.status(400).json({ error: "Missing required fields" });
+    }
+
+    const vehicleRes = await pool.query(
+      "SELECT id FROM vehicles WHERE id = $1 AND user_id = $2 LIMIT 1",
+      [vehicle_id, userId]
+    );
+    if (vehicleRes.rowCount === 0) {
+      return res.status(403).json({ error: "Vehicle does not belong to current user" });
     }
 
     const result = await pool.query(
@@ -53,18 +55,15 @@ exports.createRide = async (req, res) => {
 
     res.status(201).json(result.rows[0]);
   } catch (err) {
-    console.error("❌ createRide error:", err);
+    console.error("createRide error:", err);
     res.status(500).json({ error: "Failed to create ride" });
   }
 };
 
-/* =====================================================
-   🌍 GET ALL ACTIVE RIDES (WITH VEHICLE)
-   ===================================================== */
 exports.getRides = async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT 
+      `SELECT
          r.id,
          r.status,
          r.ride_date,
@@ -81,20 +80,17 @@ exports.getRides = async (req, res) => {
        FROM rides r
        LEFT JOIN vehicles v ON r.vehicle_id = v.id
        LEFT JOIN users u ON r.user_id = u.id
-       -- TEMP TEST: show all statuses; switch back to WHERE r.status='active' later
+       WHERE r.status IN ('active', 'scheduled', 'pending')
        ORDER BY r.ride_date ASC, r.start_time ASC`
     );
-    
+
     res.json(result.rows);
   } catch (err) {
-    console.error("❌ getRides error:", err);
+    console.error("getRides error:", err);
     res.status(500).json({ error: "Failed to get rides" });
   }
 };
 
-/* =====================================================
-   👤 MY ACTIVE RIDES (DRIVER)
-   ===================================================== */
 exports.getMyRides = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -110,14 +106,11 @@ exports.getMyRides = async (req, res) => {
 
     res.json(result.rows);
   } catch (err) {
-    console.error("❌ getMyRides error:", err);
+    console.error("getMyRides error:", err);
     res.status(500).json({ error: "Failed to get my rides" });
   }
 };
 
-/* =====================================================
-   🔍 RIDE DETAIL
-   ===================================================== */
 exports.getRideById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -136,14 +129,11 @@ exports.getRideById = async (req, res) => {
 
     res.json(result.rows[0]);
   } catch (err) {
-    console.error("❌ getRideById error:", err);
+    console.error("getRideById error:", err);
     res.status(500).json({ error: "Failed to get ride" });
   }
 };
 
-/* =====================================================
-   🟢 ACTIVE RIDE FOR HOME SCREEN
-   ===================================================== */
 exports.getActiveRide = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -168,14 +158,11 @@ exports.getActiveRide = async (req, res) => {
 
     res.json(result.rows[0] || null);
   } catch (err) {
-    console.error("❌ getActiveRide error:", err);
+    console.error("getActiveRide error:", err);
     res.status(500).json({ error: "Failed to get active ride" });
   }
 };
 
-/* =====================================================
-   📜 MY RIDE HISTORY (DRIVER + PASSENGER)
-   ===================================================== */
 exports.getMyRideHistory = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -195,14 +182,11 @@ exports.getMyRideHistory = async (req, res) => {
 
     res.json(result.rows);
   } catch (err) {
-    console.error("❌ getMyRideHistory error:", err);
+    console.error("getMyRideHistory error:", err);
     res.status(500).json({ error: "Failed to get ride history" });
   }
 };
 
-/* =====================================================
-   🚦 RIDE LIFECYCLE
-   ===================================================== */
 exports.startRide = async (req, res) => {
   const userId = req.user.id;
   const { id } = req.params;
@@ -213,12 +197,13 @@ exports.startRide = async (req, res) => {
       [id, userId]
     );
 
-    if (result.rowCount === 0)
+    if (result.rowCount === 0) {
       return res.status(404).json({ error: "Ride not found or not owner" });
+    }
 
     res.json({ success: true });
   } catch (err) {
-    console.error("❌ startRide error:", err);
+    console.error("startRide error:", err);
     res.status(500).json({ error: "Failed to start ride" });
   }
 };
@@ -233,12 +218,13 @@ exports.completeRide = async (req, res) => {
       [id, userId]
     );
 
-    if (result.rowCount === 0)
+    if (result.rowCount === 0) {
       return res.status(404).json({ error: "Ride not found or not owner" });
+    }
 
     res.json({ success: true });
   } catch (err) {
-    console.error("❌ completeRide error:", err);
+    console.error("completeRide error:", err);
     res.status(500).json({ error: "Failed to complete ride" });
   }
 };
@@ -253,12 +239,13 @@ exports.cancelRide = async (req, res) => {
       [id, userId]
     );
 
-    if (result.rowCount === 0)
+    if (result.rowCount === 0) {
       return res.status(404).json({ error: "Ride not found or not owner" });
+    }
 
     res.json({ success: true });
   } catch (err) {
-    console.error("❌ cancelRide error:", err);
+    console.error("cancelRide error:", err);
     res.status(500).json({ error: "Failed to cancel ride" });
   }
 };

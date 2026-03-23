@@ -1,4 +1,4 @@
--- Minimal schema for OneWay app (for local testing)
+-- Schema for OneWay app
 
 -- Users
 CREATE TABLE IF NOT EXISTS users (
@@ -7,8 +7,23 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT,
   name TEXT NOT NULL,
   role VARCHAR(20) DEFAULT 'passenger',
-  avatar_id VARCHAR(100),
-  rating NUMERIC(2,1) DEFAULT 0,
+  avatar_id VARCHAR(100) DEFAULT 'guy',
+  rating NUMERIC(2,1) DEFAULT 1,
+  email TEXT,
+  email_verified BOOLEAN DEFAULT FALSE,
+  phone_verified BOOLEAN DEFAULT FALSE,
+  identity_verified BOOLEAN DEFAULT FALSE,
+  driver_license_verified BOOLEAN DEFAULT FALSE,
+  verification_status VARCHAR(20) DEFAULT 'none',
+  verification_submitted_at TIMESTAMP,
+  verification_approved_at TIMESTAMP,
+  verification_rejected_at TIMESTAMP,
+  verification_note TEXT,
+  payment_linked BOOLEAN DEFAULT FALSE,
+  payment_account TEXT,
+  driver_verified BOOLEAN DEFAULT FALSE,
+  driver_license_number TEXT,
+  one_way_verified BOOLEAN DEFAULT FALSE,
   total_rides INT DEFAULT 0,
   is_blocked BOOLEAN DEFAULT FALSE,
   last_login_at TIMESTAMP,
@@ -54,6 +69,10 @@ CREATE TABLE IF NOT EXISTS bookings (
   ride_id INT REFERENCES rides(id) ON DELETE CASCADE,
   user_id INT REFERENCES users(id) ON DELETE CASCADE,
   seats_booked INT DEFAULT 1,
+  status VARCHAR(20) DEFAULT 'pending',
+  approved_by INT REFERENCES users(id) ON DELETE SET NULL,
+  approved_at TIMESTAMP,
+  rejected_at TIMESTAMP,
   created_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -76,6 +95,60 @@ CREATE TABLE IF NOT EXISTS notifications (
   body TEXT,
   type VARCHAR(50),
   related_id INT,
+  from_user_id INT REFERENCES users(id) ON DELETE SET NULL,
+  from_user_name TEXT,
+  from_avatar_id VARCHAR(100),
+  ride_id INT REFERENCES rides(id) ON DELETE SET NULL,
+  booking_id INT REFERENCES bookings(id) ON DELETE SET NULL,
   is_read BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMP DEFAULT NOW()
 );
+
+-- Backfill / compatibility for existing DBs
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS identity_verified BOOLEAN DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS driver_license_verified BOOLEAN DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_status VARCHAR(20) DEFAULT 'none';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_submitted_at TIMESTAMP;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_approved_at TIMESTAMP;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_rejected_at TIMESTAMP;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_note TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_linked BOOLEAN DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_account TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS driver_verified BOOLEAN DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS driver_license_number TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS one_way_verified BOOLEAN DEFAULT FALSE;
+ALTER TABLE users ALTER COLUMN avatar_id SET DEFAULT 'guy';
+
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS seats_booked INT DEFAULT 1;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'pending';
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS approved_by INT REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS rejected_at TIMESTAMP;
+
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS from_user_id INT REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS from_user_name TEXT;
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS from_avatar_id VARCHAR(100);
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS ride_id INT REFERENCES rides(id) ON DELETE SET NULL;
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS booking_id INT REFERENCES bookings(id) ON DELETE SET NULL;
+
+UPDATE users
+SET rating = 1
+WHERE rating IS NULL OR rating < 1;
+
+UPDATE users
+SET avatar_id = 'guy'
+WHERE avatar_id IS NULL OR btrim(avatar_id) = '';
+
+UPDATE users
+SET
+  email_verified = COALESCE(email_verified, FALSE),
+  phone_verified = COALESCE(phone_verified, FALSE),
+  identity_verified = COALESCE(identity_verified, FALSE),
+  driver_license_verified = COALESCE(driver_license_verified, FALSE),
+  payment_linked = COALESCE(payment_linked, FALSE),
+  driver_verified = COALESCE(driver_verified, FALSE),
+  one_way_verified = COALESCE(one_way_verified, FALSE),
+  verification_status = COALESCE(verification_status, 'none');
