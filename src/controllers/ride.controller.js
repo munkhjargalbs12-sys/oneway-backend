@@ -111,6 +111,26 @@ exports.getMyRides = async (req, res) => {
   }
 };
 
+exports.getMyAllRides = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const result = await pool.query(
+      `SELECT r.*, v.brand, v.model, v.color, v.plate_number
+       FROM rides r
+       LEFT JOIN vehicles v ON r.vehicle_id = v.id
+       WHERE r.user_id = $1
+       ORDER BY r.ride_date DESC NULLS LAST, r.start_time DESC NULLS LAST, r.id DESC`,
+      [userId]
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error("getMyAllRides error:", err);
+    res.status(500).json({ error: "Failed to get all rides" });
+  }
+};
+
 exports.getRideById = async (req, res) => {
   try {
     const { id } = req.params;

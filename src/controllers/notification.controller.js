@@ -6,29 +6,67 @@ function isGenericName(v) {
   return !s || s === "хэрэглэгч" || s === "хэрэлэгч" || s === "user";
 }
 
+async function getNotificationMeta(client) {
+  const { rows } = await client.query(
+    `SELECT table_name, column_name
+       FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND (
+          (table_name = 'notifications' AND column_name IN ('from_user_id', 'booking_id'))
+          OR (table_name = 'bookings' AND column_name IN ('status', 'attendance_status'))
+        )`
+  );
+
+  const cols = new Set(rows.map((row) => `${row.table_name}.${row.column_name}`));
+  return {
+    hasFromUserId: cols.has("notifications.from_user_id"),
+    hasBookingId: cols.has("notifications.booking_id"),
+    hasBookingStatus: cols.has("bookings.status"),
+    hasAttendanceStatus: cols.has("bookings.attendance_status"),
+  };
+}
+
 exports.getMyNotifications = async (req, res) => {
+  const client = await pool.connect();
   try {
     const userId = req.user.id;
+    const meta = await getNotificationMeta(client);
+    const selectParts = ["n.*"];
+    let joinClause = "";
 
-    const { rows } = await pool.query(
-      `SELECT * FROM notifications
-       WHERE user_id = $1
-       ORDER BY created_at DESC`,
+    if (meta.hasBookingId && (meta.hasBookingStatus || meta.hasAttendanceStatus)) {
+      if (meta.hasBookingStatus) {
+        selectParts.push("b.status AS booking_status");
+      }
+      if (meta.hasAttendanceStatus) {
+        selectParts.push("b.attendance_status");
+      }
+      joinClause = "LEFT JOIN bookings b ON b.id = n.booking_id";
+    }
+
+    const { rows } = await client.query(
+      `SELECT ${selectParts.join(", ")}
+         FROM notifications n
+         ${joinClause}
+        WHERE n.user_id = $1
+        ORDER BY n.created_at DESC`,
       [userId]
     );
 
     if (!rows.length) return res.json(rows);
 
-    const ids = Array.from(
-      new Set(
-        rows
-          .map((n) => Number(n?.from_user_id))
-          .filter((id) => Number.isFinite(id) && id > 0)
-      )
-    );
+    const ids = meta.hasFromUserId
+      ? Array.from(
+          new Set(
+            rows
+              .map((n) => Number(n?.from_user_id))
+              .filter((id) => Number.isFinite(id) && id > 0)
+          )
+        )
+      : [];
 
     if (ids.length > 0) {
-      const usersRes = await pool.query(
+      const usersRes = await client.query(
         `SELECT id, name, avatar_id
          FROM users
          WHERE id = ANY($1)`,
@@ -54,6 +92,8 @@ exports.getMyNotifications = async (req, res) => {
   } catch (err) {
     console.error("getMyNotifications error:", err);
     res.status(500).json({ error: "Failed to get notifications" });
+  } finally {
+    client.release();
   }
 };
 

@@ -7,7 +7,9 @@ const {
   getRides,
   getRideById,
   getMyRides,
+  getMyAllRides,
   getActiveRide,
+  getMyRideHistory,
   startRide,
   completeRide,
   cancelRide,
@@ -18,7 +20,9 @@ router.get("/", getRides);
 
 // 🔐 Auth required
 router.get("/mine", auth, getMyRides);
+router.get("/mine/all", auth, getMyAllRides);
 router.get("/active", auth, getActiveRide);
+router.get("/history", auth, getMyRideHistory);
 router.post("/", auth, createRide);
 
 // 🚦 Ride lifecycle

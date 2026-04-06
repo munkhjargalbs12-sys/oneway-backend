@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS users (
   driver_verified BOOLEAN DEFAULT FALSE,
   driver_license_number TEXT,
   one_way_verified BOOLEAN DEFAULT FALSE,
+  balance INT DEFAULT 0,
+  locked_balance INT DEFAULT 0,
   total_rides INT DEFAULT 0,
   is_blocked BOOLEAN DEFAULT FALSE,
   last_login_at TIMESTAMP,
@@ -39,6 +41,7 @@ CREATE TABLE IF NOT EXISTS vehicles (
   color TEXT,
   plate_number TEXT,
   seats INT DEFAULT 4,
+  vehicle_verified BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -104,6 +107,16 @@ CREATE TABLE IF NOT EXISTS notifications (
   created_at TIMESTAMP DEFAULT NOW()
 );
 
+-- Wallet transactions
+CREATE TABLE IF NOT EXISTS wallet_transactions (
+  id SERIAL PRIMARY KEY,
+  user_id INT REFERENCES users(id) ON DELETE CASCADE,
+  type VARCHAR(50) NOT NULL,
+  title TEXT NOT NULL,
+  amount INT NOT NULL,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
 -- Backfill / compatibility for existing DBs
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE;
@@ -120,6 +133,11 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_account TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS driver_verified BOOLEAN DEFAULT FALSE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS driver_license_number TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS one_way_verified BOOLEAN DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS balance INT DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_balance INT DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS total_rides INT DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP;
 ALTER TABLE users ALTER COLUMN avatar_id SET DEFAULT 'guy';
 
 ALTER TABLE bookings ADD COLUMN IF NOT EXISTS seats_booked INT DEFAULT 1;
@@ -127,6 +145,11 @@ ALTER TABLE bookings ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'pendin
 ALTER TABLE bookings ADD COLUMN IF NOT EXISTS approved_by INT REFERENCES users(id) ON DELETE SET NULL;
 ALTER TABLE bookings ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP;
 ALTER TABLE bookings ADD COLUMN IF NOT EXISTS rejected_at TIMESTAMP;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS attendance_status VARCHAR(20) DEFAULT 'unknown';
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS attendance_marked_at TIMESTAMP;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS attendance_marked_by INT REFERENCES users(id) ON DELETE SET NULL;
+
+ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS vehicle_verified BOOLEAN DEFAULT FALSE;
 
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS from_user_id INT REFERENCES users(id) ON DELETE SET NULL;
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS from_user_name TEXT;
@@ -151,4 +174,11 @@ SET
   payment_linked = COALESCE(payment_linked, FALSE),
   driver_verified = COALESCE(driver_verified, FALSE),
   one_way_verified = COALESCE(one_way_verified, FALSE),
+  balance = COALESCE(balance, 0),
+  locked_balance = COALESCE(locked_balance, 0),
+  total_rides = COALESCE(total_rides, 0),
   verification_status = COALESCE(verification_status, 'none');
+
+UPDATE bookings
+SET attendance_status = 'unknown'
+WHERE attendance_status IS NULL OR btrim(attendance_status) = '';

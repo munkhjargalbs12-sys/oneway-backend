@@ -13,37 +13,48 @@ exports.getMe = async (req, res) => {
   try {
     const userId = req.user.id;
 
-      const { rows } = await pool.query(
+    const { rows } = await pool.query(
       `SELECT
-         id,
-         name,
-         phone,
-         role,
-         avatar_id,
-         email,
-         COALESCE(rating, 1) AS rating,
-         payment_account,
-         driver_license_number,
-         COALESCE(identity_verified, false) AS identity_verified,
-         COALESCE(driver_license_verified, false) AS driver_license_verified,
-         verification_status,
-         verification_submitted_at,
-         verification_approved_at,
-         verification_rejected_at,
-         verification_note,
-         COALESCE(email_verified, false) AS email_verified,
-         COALESCE(phone_verified, false) AS phone_verified,
-         COALESCE(payment_linked, false) AS payment_linked,
-         COALESCE(driver_verified, false) AS driver_verified,
+         u.id,
+         u.name,
+         u.phone,
+         u.role,
+         u.avatar_id,
+         u.email,
+         COALESCE(u.rating, 1) AS rating,
+         COALESCE(u.balance, 0) AS balance,
+         COALESCE(u.locked_balance, 0) AS locked_balance,
+         u.payment_account,
+         u.driver_license_number,
+         COALESCE(u.identity_verified, false) AS identity_verified,
+         COALESCE(u.driver_license_verified, false) AS driver_license_verified,
+         u.verification_status,
+         u.verification_submitted_at,
+         u.verification_approved_at,
+         u.verification_rejected_at,
+         u.verification_note,
+         COALESCE(u.email_verified, false) AS email_verified,
+         COALESCE(u.phone_verified, false) AS phone_verified,
+         COALESCE(u.payment_linked, false) AS payment_linked,
+         COALESCE(u.driver_verified, false) AS driver_verified,
+         COALESCE((
+           SELECT BOOL_OR(v.vehicle_verified)
+           FROM vehicles v
+           WHERE v.user_id = u.id
+         ), false) AS vehicle_verified,
          (CASE
-           WHEN one_way_verified THEN 5
-           WHEN driver_verified THEN 4
-           WHEN payment_linked THEN 3
-           WHEN email_verified AND phone_verified THEN 2
+           WHEN u.one_way_verified THEN 5
+           WHEN u.driver_verified AND COALESCE((
+             SELECT BOOL_OR(v.vehicle_verified)
+             FROM vehicles v
+             WHERE v.user_id = u.id
+           ), false) THEN 4
+           WHEN u.payment_linked THEN 3
+           WHEN u.email_verified AND u.phone_verified THEN 2
            ELSE 1
          END) AS trust_level
-       FROM users
-       WHERE id = $1`,
+       FROM users u
+       WHERE u.id = $1`,
       [userId]
     );
 
@@ -218,14 +229,25 @@ exports.setDriverVerification = async (req, res) => {
     }
 
     await pool.query(
-      "UPDATE users SET driver_license_number = $1, driver_verified = TRUE WHERE id = $2",
+      `UPDATE users
+       SET driver_license_number = $1,
+           driver_verified = TRUE,
+           driver_license_verified = TRUE,
+           verification_status = 'approved',
+           verification_submitted_at = COALESCE(verification_submitted_at, NOW()),
+           verification_approved_at = NOW(),
+           verification_rejected_at = NULL,
+           verification_note = NULL
+       WHERE id = $2`,
       [driver_license_number, userId]
     );
 
     res.json({
       success: true,
       driver_license_number,
-      driver_verified: true
+      driver_verified: true,
+      driver_license_verified: true,
+      verification_status: "approved",
     });
   } catch (err) {
     console.error("setDriverVerification error:", err);

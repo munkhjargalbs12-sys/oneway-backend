@@ -9,11 +9,16 @@ const ratingRoutes = require("./routes/rating.routes");
 const vehicleRoutes = require("./routes/vehicle.routes");
 const notificationRoutes = require("./routes/notification.routes");
 const routeRoutes = require("./routes/route.routes");
+const walletRoutes = require("./routes/wallet.routes");
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
+
+app.get("/health", (_req, res) => {
+  res.json({ ok: true, service: "oneway-backend" });
+});
 
 app.use("/auth", authRoutes);
 app.use("/rides", rideRoutes);
@@ -23,5 +28,6 @@ app.use("/ratings", ratingRoutes);
 app.use("/vehicles", vehicleRoutes);
 app.use("/notifications", notificationRoutes);
 app.use("/route", routeRoutes); // 
+app.use("/wallet", walletRoutes);
 
 module.exports = app;

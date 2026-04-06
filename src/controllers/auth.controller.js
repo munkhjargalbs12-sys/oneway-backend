@@ -4,7 +4,7 @@ const pool = require("../db");
 
 function resolveTrustLevel(user) {
   if (user?.one_way_verified) return 5;
-  if (user?.driver_verified) return 4;
+  if (user?.driver_verified && user?.vehicle_verified) return 4;
   if (user?.payment_linked) return 3;
   if (user?.email_verified && user?.phone_verified) return 2;
   return 1;
@@ -73,6 +73,7 @@ exports.register = async (req, res) => {
         $1, $2, $3, $4, $5, 1, false, false, false, false, false, false, false
       )
       RETURNING id, phone, name, role, avatar_id, rating,
+                balance, locked_balance,
                 email_verified, phone_verified, identity_verified, driver_license_verified,
                 payment_linked, driver_verified, one_way_verified,
                 verification_status, verification_submitted_at, verification_approved_at, verification_rejected_at, verification_note
@@ -97,10 +98,13 @@ exports.register = async (req, res) => {
         role: user.role,
         avatar_id: user.avatar_id,
         rating: Number(user.rating ?? 1),
+        balance: Number(user.balance ?? 0),
+        locked_balance: Number(user.locked_balance ?? 0),
         email_verified: Boolean(user.email_verified),
         phone_verified: Boolean(user.phone_verified),
         identity_verified: Boolean(user.identity_verified),
         driver_license_verified: Boolean(user.driver_license_verified),
+        vehicle_verified: false,
         verification_status: user.verification_status,
         verification_submitted_at: user.verification_submitted_at,
         verification_approved_at: user.verification_approved_at,
@@ -130,9 +134,18 @@ exports.login = async (req, res) => {
       `
       SELECT
         *,
+        COALESCE((
+          SELECT BOOL_OR(v.vehicle_verified)
+          FROM vehicles v
+          WHERE v.user_id = users.id
+        ), FALSE) AS vehicle_verified,
         (CASE
           WHEN one_way_verified THEN 5
-          WHEN driver_verified THEN 4
+          WHEN driver_verified AND COALESCE((
+            SELECT BOOL_OR(v.vehicle_verified)
+            FROM vehicles v
+            WHERE v.user_id = users.id
+          ), FALSE) THEN 4
           WHEN payment_linked THEN 3
           WHEN email_verified AND phone_verified THEN 2
           ELSE 1
@@ -177,10 +190,13 @@ exports.login = async (req, res) => {
         role: user.role,
         avatar_id: user.avatar_id,
         rating: Number(user.rating ?? 1),
+        balance: Number(user.balance ?? 0),
+        locked_balance: Number(user.locked_balance ?? 0),
         email_verified: Boolean(user.email_verified),
         phone_verified: Boolean(user.phone_verified),
         identity_verified: Boolean(user.identity_verified),
         driver_license_verified: Boolean(user.driver_license_verified),
+        vehicle_verified: Boolean(user.vehicle_verified),
         verification_status: user.verification_status,
         verification_submitted_at: user.verification_submitted_at,
         verification_approved_at: user.verification_approved_at,
