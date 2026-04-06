@@ -24,17 +24,29 @@ git pull --ff-only origin "$BRANCH"
 echo "Installing production dependencies"
 npm install --omit=dev
 
-set -a
-. ./.env
-set +a
+read_env() {
+  local key="$1"
+  local line
+  line="$(grep -m1 "^${key}=" .env || true)"
+  if [[ -z "$line" ]]; then
+    return 1
+  fi
+  printf '%s' "${line#*=}" | tr -d '\r'
+}
 
-if [[ -z "${DB_HOST:-}" || -z "${DB_PORT:-}" || -z "${DB_NAME:-}" || -z "${DB_USER:-}" ]]; then
+DB_HOST="$(read_env DB_HOST || true)"
+DB_PORT="$(read_env DB_PORT || true)"
+DB_NAME="$(read_env DB_NAME || true)"
+DB_USER="$(read_env DB_USER || true)"
+DB_PASSWORD="$(read_env DB_PASSWORD || true)"
+
+if [[ -z "${DB_HOST}" || -z "${DB_PORT}" || -z "${DB_NAME}" || -z "${DB_USER}" ]]; then
   echo "DB_HOST, DB_PORT, DB_NAME, and DB_USER must be set in .env"
   exit 1
 fi
 
 echo "Applying database compatibility updates"
-PGPASSWORD="${DB_PASSWORD:-}" psql \
+PGPASSWORD="${DB_PASSWORD}" psql \
   -h "$DB_HOST" \
   -p "$DB_PORT" \
   -U "$DB_USER" \
