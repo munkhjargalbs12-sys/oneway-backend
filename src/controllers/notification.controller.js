@@ -36,7 +36,10 @@ exports.getMyNotifications = async (req, res) => {
 
     if (meta.hasBookingId && (meta.hasBookingStatus || meta.hasAttendanceStatus)) {
       if (meta.hasBookingStatus) {
-        selectParts.push("b.status AS booking_status");
+        selectParts.push(`CASE
+          WHEN n.booking_id IS NOT NULL AND b.id IS NULL THEN 'canceled'
+          ELSE b.status
+        END AS booking_status`);
       }
       if (meta.hasAttendanceStatus) {
         selectParts.push("b.attendance_status");
