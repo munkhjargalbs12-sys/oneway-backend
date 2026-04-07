@@ -49,6 +49,9 @@ function getBookingStatusLabel(status) {
       return "Захиалга баталгаажсан";
     case "rejected":
       return "Жолооч зөвшөөрөөгүй";
+    case "cancelled":
+    case "canceled":
+      return "Захиалга цуцлагдсан";
     default:
       return String(status || "");
   }
@@ -73,6 +76,7 @@ function isExpectedBookingError(message) {
   return [
     "Invalid ride_id",
     "Invalid seats",
+    "Invalid booking id",
     "Ride not found",
     "You cannot book your own ride",
     "Ride not available",
@@ -81,6 +85,12 @@ function isExpectedBookingError(message) {
     "Ride already finished",
     "Not enough seats",
     "Booking already exists",
+    "Booking not found",
+    "Only the booking owner can cancel",
+    "Only pending or approved bookings can be cancelled",
+    "Started ride booking cannot be cancelled",
+    "Completed ride booking cannot be cancelled",
+    "Cancelled ride booking cannot be cancelled",
   ].includes(String(message || "").trim());
 }
 
@@ -228,6 +238,24 @@ function buildBookingRequestNotificationBody(requesterName, summary) {
   return lines.join("\n");
 }
 
+function buildBookingCancelledNotificationBody(passengerName, ride) {
+  const parts = [`${passengerName} хэрэглэгч суудлын захиалгаа цуцаллаа.`];
+  const routeParts = [];
+  const rideDate = formatRideDate(ride?.ride_date);
+  const startTime = String(ride?.start_time || "").trim();
+  const endLocation = String(ride?.end_location || "").trim();
+
+  if (endLocation) routeParts.push(`${endLocation} чиглэл`);
+  if (rideDate) routeParts.push(rideDate);
+  if (startTime) routeParts.push(startTime);
+
+  if (routeParts.length > 0) {
+    parts.push(routeParts.join(" · "));
+  }
+
+  return parts.join("\n");
+}
+
 exports.getMyBookings = async (req, res) => {
   const userId = Number(req.user.id);
   const client = await pool.connect();
@@ -272,7 +300,9 @@ exports.getMyBookings = async (req, res) => {
       created_at: row.created_at,
     }));
 
-    const activeBookings = bookings.filter((booking) => booking.status !== "rejected");
+    const activeBookings = bookings.filter((booking) =>
+      ["pending", "approved"].includes(String(booking.status || "").toLowerCase())
+    );
     const pendingRideIds = bookings
       .filter((booking) => booking.status === "pending")
       .map((booking) => booking.ride_id);
@@ -676,6 +706,140 @@ exports.markBookingAttendance = async (req, res) => {
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("mark booking attendance error:", err.message);
+    res.status(400).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+};
+
+exports.cancelMyBooking = async (req, res) => {
+  const userId = Number(req.user.id);
+  const bookingId = Number(req.params.id);
+
+  if (!Number.isFinite(bookingId) || bookingId <= 0) {
+    return res.status(400).json({ error: "Invalid booking id" });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const meta = await getBookingMeta(client);
+    if (!meta.hasStatus) {
+      throw new Error("Booking cancellation requires bookings.status column");
+    }
+
+    const seatExpr = meta.seatColumn === "seats_booked" ? "b.seats_booked" : "b.seats";
+    const rowRes = await client.query(
+      `SELECT b.id,
+              b.ride_id,
+              b.user_id,
+              ${seatExpr} AS seats,
+              b.status AS booking_status,
+              r.user_id AS driver_id,
+              r.status AS ride_status,
+              r.seats_total,
+              r.seats_taken,
+              r.ride_date,
+              r.start_time,
+              r.end_location,
+              u.name AS driver_name,
+              u.avatar_id AS driver_avatar_id
+         FROM bookings b
+         JOIN rides r ON r.id = b.ride_id
+         LEFT JOIN users u ON u.id = r.user_id
+        WHERE b.id = $1
+        FOR UPDATE`,
+      [bookingId]
+    );
+
+    if (rowRes.rowCount === 0) {
+      throw new Error("Booking not found");
+    }
+
+    const row = rowRes.rows[0];
+    if (Number(row.user_id) !== userId) {
+      await client.query("ROLLBACK");
+      return res.status(403).json({ error: "Only the booking owner can cancel" });
+    }
+
+    const bookingStatus = String(row.booking_status || "").toLowerCase();
+    if (!["pending", "approved"].includes(bookingStatus)) {
+      throw new Error("Only pending or approved bookings can be cancelled");
+    }
+
+    const rideStatus = String(row.ride_status || "").toLowerCase();
+    if (rideStatus === "started") {
+      throw new Error("Started ride booking cannot be cancelled");
+    }
+    if (rideStatus === "completed") {
+      throw new Error("Completed ride booking cannot be cancelled");
+    }
+    if (rideStatus === "cancelled" || rideStatus === "canceled") {
+      throw new Error("Cancelled ride booking cannot be cancelled");
+    }
+
+    await client.query(
+      `UPDATE bookings
+          SET status = 'cancelled'
+        WHERE id = $1`,
+      [bookingId]
+    );
+
+    let nextRideStatus = row.ride_status;
+    if (bookingStatus === "approved") {
+      const nextSeatsTaken = Math.max(0, Number(row.seats_taken || 0) - Number(row.seats || 1));
+      if (rideStatus === "full" && nextSeatsTaken < Number(row.seats_total || 0)) {
+        nextRideStatus = "active";
+      }
+
+      await client.query(
+        `UPDATE rides
+            SET seats_taken = $1,
+                status = $2
+          WHERE id = $3`,
+        [nextSeatsTaken, nextRideStatus, row.ride_id]
+      );
+    }
+
+    const passengerRes = await client.query(
+      `SELECT id, name, phone, avatar_id
+         FROM users
+        WHERE id = $1`,
+      [userId]
+    );
+    const passenger = passengerRes.rows[0] || { id: userId };
+    const passengerName = normalizeRequesterName(passenger, userId);
+
+    await client.query("COMMIT");
+
+    await createNotification({
+      userId: Number(row.driver_id),
+      title: "Захиалга цуцлагдлаа",
+      body: buildBookingCancelledNotificationBody(passengerName, row),
+      type: "booking_cancelled",
+      relatedId: Number(row.ride_id),
+      fromUserId: userId,
+      fromUserName: passengerName,
+      fromAvatarId: passenger.avatar_id || null,
+      rideId: Number(row.ride_id),
+      bookingId,
+    });
+
+    res.json({
+      success: true,
+      booking_id: bookingId,
+      ride_id: Number(row.ride_id),
+      status: "cancelled",
+      status_label: getBookingStatusLabel("cancelled"),
+    });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    if (isExpectedBookingError(err.message)) {
+      console.warn("booking cancellation rejected:", err.message);
+    } else {
+      console.error("cancel booking error:", err.message);
+    }
     res.status(400).json({ error: err.message });
   } finally {
     client.release();

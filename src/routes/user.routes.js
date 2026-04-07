@@ -5,6 +5,8 @@ const userController = require("../controllers/user.controller");
 
 router.get("/me", auth, userController.getMe);
 router.patch("/avatar", auth, userController.updateAvatar);
+router.post("/push-token", auth, userController.savePushToken);
+router.delete("/push-token", auth, userController.clearPushToken);
 router.post("/verify/email", auth, userController.setEmailVerification);
 router.post("/verify/phone", auth, userController.setPhoneVerification);
 router.post("/verify/payment", auth, userController.setPaymentLink);

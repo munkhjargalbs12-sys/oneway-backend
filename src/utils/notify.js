@@ -1,4 +1,5 @@
 const pool = require("../db");
+const { sendPushToUser } = require("./push");
 
 async function findDuplicateNotification(existingColumns, payload) {
   const normalizedType = String(payload?.type || "").trim().toLowerCase();
@@ -128,7 +129,27 @@ exports.createNotification = async (payload) => {
       values
     );
 
-    return result.rows[0] || null;
+    const inserted = result.rows[0] || null;
+
+    if (inserted?.id && Number.isFinite(Number(userId)) && title && body) {
+      sendPushToUser(Number(userId), {
+        title,
+        body,
+        data: {
+          notificationId: Number(inserted.id),
+          type: type || null,
+          relatedId: relatedId || null,
+          rideId: rideId || null,
+          bookingId: bookingId || null,
+          screen: "/notifications",
+        },
+        sound: "default",
+      }).catch((pushErr) => {
+        console.error("push send error:", pushErr.message || pushErr);
+      });
+    }
+
+    return inserted;
   } catch (err) {
     console.error("notify error:", err);
   }

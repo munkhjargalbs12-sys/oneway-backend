@@ -1,4 +1,57 @@
 const pool = require("../db");
+const { createNotification } = require("../utils/notify");
+
+function normalizePersonName(name, fallback = "Жолооч") {
+  const value = String(name || "").trim();
+  return value || fallback;
+}
+
+function formatRideDate(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (match) {
+    return `${match[1]}-${match[2]}-${match[3]}`;
+  }
+
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) {
+    return raw;
+  }
+
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function buildRideCancelledNotificationBody(ride, driverName) {
+  const summary = [];
+  const endLocation = String(ride?.end_location || "").trim();
+  const rideDate = formatRideDate(ride?.ride_date);
+  const startTime = String(ride?.start_time || "").trim();
+
+  if (endLocation) {
+    summary.push(`${endLocation} чиглэл`);
+  } else {
+    summary.push("таны захиалсан чиглэл");
+  }
+
+  if (rideDate) {
+    summary.push(`${rideDate}`);
+  }
+
+  if (startTime) {
+    summary.push(`${startTime}`);
+  }
+
+  const routeSummary = summary.join(" · ");
+  return routeSummary
+    ? `${driverName} жолооч ${routeSummary} аяллыг цуцаллаа. Өөр тохирох чиглэл сонгоно уу.`
+    : `${driverName} жолооч таны захиалсан чиглэлийг цуцаллаа. Өөр тохирох чиглэл сонгоно уу.`;
+}
 
 exports.createRide = async (req, res) => {
   try {
@@ -252,20 +305,89 @@ exports.completeRide = async (req, res) => {
 exports.cancelRide = async (req, res) => {
   const userId = req.user.id;
   const { id } = req.params;
+  const client = await pool.connect();
 
   try {
-    const result = await pool.query(
-      "UPDATE rides SET status='cancelled' WHERE id=$1 AND user_id=$2 RETURNING *",
+    await client.query("BEGIN");
+
+    const rideRes = await client.query(
+      `SELECT r.id,
+              r.user_id,
+              r.status,
+              r.end_location,
+              r.ride_date,
+              r.start_time,
+              u.name AS driver_name,
+              u.avatar_id AS driver_avatar_id
+         FROM rides r
+         LEFT JOIN users u ON u.id = r.user_id
+        WHERE r.id = $1 AND r.user_id = $2
+        FOR UPDATE`,
       [id, userId]
     );
 
-    if (result.rowCount === 0) {
+    if (rideRes.rowCount === 0) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ error: "Ride not found or not owner" });
     }
 
-    res.json({ success: true });
+    const ride = rideRes.rows[0];
+    const rideStatus = String(ride.status || "").toLowerCase();
+
+    if (rideStatus === "completed") {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Completed ride cannot be cancelled" });
+    }
+
+    if (rideStatus === "cancelled" || rideStatus === "canceled") {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Ride already cancelled" });
+    }
+
+    await client.query(
+      "UPDATE rides SET status='cancelled' WHERE id = $1",
+      [ride.id]
+    );
+
+    const affectedBookingsRes = await client.query(
+      `UPDATE bookings
+          SET status = 'cancelled'
+        WHERE ride_id = $1
+          AND COALESCE(status, 'pending') IN ('pending', 'approved')
+      RETURNING id, user_id`,
+      [ride.id]
+    );
+
+    await client.query("COMMIT");
+
+    const driverName = normalizePersonName(ride.driver_name);
+    await Promise.all(
+      affectedBookingsRes.rows.map((booking) =>
+        createNotification({
+          userId: Number(booking.user_id),
+          title: "Чиглэл цуцлагдлаа",
+          body: buildRideCancelledNotificationBody(ride, driverName),
+          type: "ride_cancelled",
+          relatedId: Number(ride.id),
+          fromUserId: Number(userId),
+          fromUserName: driverName,
+          fromAvatarId: ride.driver_avatar_id || null,
+          rideId: Number(ride.id),
+          bookingId: Number(booking.id),
+        })
+      )
+    );
+
+    res.json({
+      success: true,
+      ride_id: Number(ride.id),
+      cancelled_bookings: affectedBookingsRes.rowCount,
+    });
   } catch (err) {
+    await client.query("ROLLBACK").catch(() => null);
     console.error("cancelRide error:", err);
     res.status(500).json({ error: "Failed to cancel ride" });
+  } finally {
+    client.release();
   }
 };

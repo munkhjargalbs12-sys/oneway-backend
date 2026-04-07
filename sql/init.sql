@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS users (
   driver_verified BOOLEAN DEFAULT FALSE,
   driver_license_number TEXT,
   one_way_verified BOOLEAN DEFAULT FALSE,
+  expo_push_token TEXT,
+  expo_push_token_updated_at TIMESTAMP,
   balance INT DEFAULT 0,
   locked_balance INT DEFAULT 0,
   total_rides INT DEFAULT 0,
@@ -133,6 +135,8 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_account TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS driver_verified BOOLEAN DEFAULT FALSE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS driver_license_number TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS one_way_verified BOOLEAN DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS expo_push_token TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS expo_push_token_updated_at TIMESTAMP;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS balance INT DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_balance INT DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS total_rides INT DEFAULT 0;

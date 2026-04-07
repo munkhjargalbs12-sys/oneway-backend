@@ -1,5 +1,9 @@
 const pool = require("../db");
 const avatars = require("../constants/avatars");
+
+const isExpoPushToken = (value) =>
+  /^(ExponentPushToken|ExpoPushToken)\[[^\]]+\]$/.test(String(value || "").trim());
+
 const sanitizeText = (value) => {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -252,5 +256,59 @@ exports.setDriverVerification = async (req, res) => {
   } catch (err) {
     console.error("setDriverVerification error:", err);
     res.status(500).json({ message: "Failed to verify driver license" });
+  }
+};
+
+exports.savePushToken = async (req, res) => {
+  try {
+    const userId = Number(req.user.id);
+    const expoPushToken = sanitizeText(
+      req.body?.expo_push_token ?? req.body?.push_token
+    );
+
+    if (!expoPushToken || !isExpoPushToken(expoPushToken)) {
+      return res.status(400).json({ message: "Invalid Expo push token" });
+    }
+
+    await pool.query(
+      `UPDATE users
+          SET expo_push_token = NULL,
+              expo_push_token_updated_at = NOW()
+        WHERE id <> $2
+          AND expo_push_token = $1`,
+      [expoPushToken, userId]
+    );
+
+    await pool.query(
+      `UPDATE users
+          SET expo_push_token = $1,
+              expo_push_token_updated_at = NOW()
+        WHERE id = $2`,
+      [expoPushToken, userId]
+    );
+
+    res.json({ success: true, expo_push_token: expoPushToken });
+  } catch (err) {
+    console.error("savePushToken error:", err);
+    res.status(500).json({ message: "Failed to save push token" });
+  }
+};
+
+exports.clearPushToken = async (req, res) => {
+  try {
+    const userId = Number(req.user.id);
+
+    await pool.query(
+      `UPDATE users
+          SET expo_push_token = NULL,
+              expo_push_token_updated_at = NOW()
+        WHERE id = $1`,
+      [userId]
+    );
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("clearPushToken error:", err);
+    res.status(500).json({ message: "Failed to clear push token" });
   }
 };
