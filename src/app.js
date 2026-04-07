@@ -9,6 +9,7 @@ const ratingRoutes = require("./routes/rating.routes");
 const vehicleRoutes = require("./routes/vehicle.routes");
 const notificationRoutes = require("./routes/notification.routes");
 const routeRoutes = require("./routes/route.routes");
+const placeRoutes = require("./routes/place.routes");
 const walletRoutes = require("./routes/wallet.routes");
 
 const app = express();
@@ -28,6 +29,7 @@ app.use("/ratings", ratingRoutes);
 app.use("/vehicles", vehicleRoutes);
 app.use("/notifications", notificationRoutes);
 app.use("/route", routeRoutes); // 
+app.use("/places", placeRoutes);
 app.use("/wallet", walletRoutes);
 
 module.exports = app;
