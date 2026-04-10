@@ -119,6 +119,16 @@ CREATE TABLE IF NOT EXISTS wallet_transactions (
   created_at TIMESTAMP DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS email_verification_codes (
+  id SERIAL PRIMARY KEY,
+  user_id INT REFERENCES users(id) ON DELETE CASCADE,
+  email TEXT NOT NULL,
+  code_hash TEXT NOT NULL,
+  expires_at TIMESTAMP NOT NULL,
+  consumed_at TIMESTAMP,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
 -- Backfill / compatibility for existing DBs
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE;
@@ -160,6 +170,14 @@ ALTER TABLE notifications ADD COLUMN IF NOT EXISTS from_user_name TEXT;
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS from_avatar_id VARCHAR(100);
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS ride_id INT REFERENCES rides(id) ON DELETE SET NULL;
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS booking_id INT REFERENCES bookings(id) ON DELETE SET NULL;
+
+ALTER TABLE email_verification_codes ADD COLUMN IF NOT EXISTS consumed_at TIMESTAMP;
+
+CREATE INDEX IF NOT EXISTS idx_email_verification_codes_user_id
+  ON email_verification_codes(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_email_verification_codes_expires_at
+  ON email_verification_codes(expires_at);
 
 UPDATE users
 SET rating = 1

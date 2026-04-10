@@ -1,13 +1,41 @@
+const crypto = require("crypto");
 const pool = require("../db");
 const avatars = require("../constants/avatars");
+const { sendVerificationCodeEmail } = require("../utils/resend");
 
 const isExpoPushToken = (value) =>
   /^(ExponentPushToken|ExpoPushToken)\[[^\]]+\]$/.test(String(value || "").trim());
+
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL_VERIFICATION_TTL_MINUTES = Math.max(
+  1,
+  Number(process.env.EMAIL_VERIFICATION_TTL_MINUTES) || 10
+);
+const EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS = Math.max(
+  0,
+  Number(process.env.EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS) || 60
+);
 
 const sanitizeText = (value) => {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+};
+
+const sanitizeEmail = (value) => {
+  const normalized = sanitizeText(value);
+  return normalized ? normalized.toLowerCase() : null;
+};
+
+const hashEmailVerificationCode = (userId, email, code) => {
+  const secret = String(
+    process.env.EMAIL_VERIFICATION_SECRET || process.env.JWT_SECRET || ""
+  );
+
+  return crypto
+    .createHash("sha256")
+    .update(`${userId}:${email}:${code}:${secret}`)
+    .digest("hex");
 };
 
 /**
@@ -152,23 +180,255 @@ exports.getUserRating = async (req, res) => {
 };
 
 exports.setEmailVerification = async (req, res) => {
+  let client;
+
   try {
-    const userId = req.user.id;
-    const email = sanitizeText(req.body?.email);
+    const userId = Number(req.user.id);
+    const email = sanitizeEmail(req.body?.email);
 
     if (!email) {
       return res.status(400).json({ message: "Email is required" });
     }
 
-    await pool.query(
-      "UPDATE users SET email = $1, email_verified = TRUE WHERE id = $2",
+    if (!EMAIL_REGEX.test(email)) {
+      return res.status(400).json({ message: "Invalid email address" });
+    }
+
+    const duplicateEmail = await pool.query(
+      `SELECT id
+         FROM users
+        WHERE LOWER(email) = LOWER($1)
+          AND id <> $2
+        LIMIT 1`,
       [email, userId]
     );
 
-    res.json({ success: true, email, email_verified: true });
+    if (duplicateEmail.rows.length > 0) {
+      return res.status(409).json({ message: "Email is already in use" });
+    }
+
+    const currentUserResult = await pool.query(
+      `SELECT email, COALESCE(email_verified, FALSE) AS email_verified
+         FROM users
+        WHERE id = $1`,
+      [userId]
+    );
+
+    const currentUser = currentUserResult.rows[0];
+    if (!currentUser) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    if (
+      currentUser.email_verified &&
+      String(currentUser.email || "").toLowerCase() === email
+    ) {
+      return res.json({
+        success: true,
+        email,
+        email_verified: true,
+        already_verified: true,
+      });
+    }
+
+    if (EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS > 0) {
+      const cooldownResult = await pool.query(
+        `SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) AS elapsed_seconds
+           FROM email_verification_codes
+          WHERE user_id = $1
+            AND email = $2
+            AND consumed_at IS NULL
+            AND expires_at > NOW()
+          ORDER BY created_at DESC
+          LIMIT 1`,
+        [userId, email]
+      );
+
+      const elapsedSeconds = Number(cooldownResult.rows[0]?.elapsed_seconds);
+      if (
+        Number.isFinite(elapsedSeconds) &&
+        elapsedSeconds < EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS
+      ) {
+        const retryAfter = Math.ceil(
+          EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS - elapsedSeconds
+        );
+        return res.status(429).json({
+          message: `Please wait ${retryAfter} seconds before requesting a new code`,
+          retry_after_seconds: retryAfter,
+        });
+      }
+    }
+
+    const code = String(crypto.randomInt(100000, 1000000));
+    const codeHash = hashEmailVerificationCode(userId, email, code);
+    const expiresAt = new Date(
+      Date.now() + EMAIL_VERIFICATION_TTL_MINUTES * 60 * 1000
+    );
+
+    client = await pool.connect();
+    await client.query("BEGIN");
+    await client.query(
+      "DELETE FROM email_verification_codes WHERE user_id = $1",
+      [userId]
+    );
+    await client.query(
+      `INSERT INTO email_verification_codes (user_id, email, code_hash, expires_at)
+       VALUES ($1, $2, $3, $4)`,
+      [userId, email, codeHash, expiresAt]
+    );
+
+    await sendVerificationCodeEmail({
+      to: email,
+      code,
+      expiresInMinutes: EMAIL_VERIFICATION_TTL_MINUTES,
+    });
+
+    await client.query("COMMIT");
+
+    res.json({
+      success: true,
+      email,
+      email_verified: false,
+      code_sent: true,
+      expires_in_seconds: EMAIL_VERIFICATION_TTL_MINUTES * 60,
+    });
   } catch (err) {
     console.error("setEmailVerification error:", err);
+    if (client) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error("setEmailVerification rollback error:", rollbackError);
+      }
+    }
+    res.status(500).json({ message: "Failed to send verification code" });
+  } finally {
+    client?.release();
+  }
+};
+
+exports.confirmEmailVerification = async (req, res) => {
+  let client;
+
+  try {
+    const userId = Number(req.user.id);
+    const email = sanitizeEmail(req.body?.email);
+    const code = sanitizeText(req.body?.code || req.body?.verification_code);
+
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+
+    if (!EMAIL_REGEX.test(email)) {
+      return res.status(400).json({ message: "Invalid email address" });
+    }
+
+    if (!code) {
+      return res.status(400).json({ message: "Verification code is required" });
+    }
+
+    if (!/^\d{6}$/.test(code)) {
+      return res.status(400).json({ message: "Verification code must be 6 digits" });
+    }
+
+    client = await pool.connect();
+    await client.query("BEGIN");
+
+    const codeResult = await client.query(
+      `SELECT id, code_hash, expires_at
+         FROM email_verification_codes
+        WHERE user_id = $1
+          AND email = $2
+          AND consumed_at IS NULL
+        ORDER BY created_at DESC
+        LIMIT 1
+        FOR UPDATE`,
+      [userId, email]
+    );
+
+    const verificationRow = codeResult.rows[0];
+    if (!verificationRow) {
+      await client.query("ROLLBACK");
+      client.release();
+      client = null;
+      return res.status(400).json({ message: "No active verification code found" });
+    }
+
+    if (new Date(verificationRow.expires_at).getTime() <= Date.now()) {
+      await client.query(
+        `DELETE FROM email_verification_codes
+          WHERE user_id = $1
+            AND email = $2
+            AND consumed_at IS NULL`,
+        [userId, email]
+      );
+      await client.query("COMMIT");
+      client.release();
+      client = null;
+      return res.status(400).json({ message: "Verification code has expired" });
+    }
+
+    const expectedHash = hashEmailVerificationCode(userId, email, code);
+    if (verificationRow.code_hash !== expectedHash) {
+      await client.query("ROLLBACK");
+      client.release();
+      client = null;
+      return res.status(400).json({ message: "Invalid verification code" });
+    }
+
+    const duplicateEmail = await client.query(
+      `SELECT id
+         FROM users
+        WHERE LOWER(email) = LOWER($1)
+          AND id <> $2
+        LIMIT 1`,
+      [email, userId]
+    );
+
+    if (duplicateEmail.rows.length > 0) {
+      await client.query("ROLLBACK");
+      client.release();
+      client = null;
+      return res.status(409).json({ message: "Email is already in use" });
+    }
+
+    await client.query(
+      `UPDATE users
+          SET email = $1,
+              email_verified = TRUE
+        WHERE id = $2`,
+      [email, userId]
+    );
+
+    await client.query(
+      `UPDATE email_verification_codes
+          SET consumed_at = NOW()
+        WHERE id = $1`,
+      [verificationRow.id]
+    );
+
+    await client.query(
+      `DELETE FROM email_verification_codes
+        WHERE user_id = $1
+          AND id <> $2`,
+      [userId, verificationRow.id]
+    );
+
+    await client.query("COMMIT");
+
+    res.json({ success: true, email, email_verified: true });
+  } catch (err) {
+    console.error("confirmEmailVerification error:", err);
+    if (client) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error("confirmEmailVerification rollback error:", rollbackError);
+      }
+    }
     res.status(500).json({ message: "Failed to verify email" });
+  } finally {
+    client?.release();
   }
 };
 
