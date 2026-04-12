@@ -322,7 +322,7 @@ exports.cancelRide = async (req, res) => {
          FROM rides r
          LEFT JOIN users u ON u.id = r.user_id
         WHERE r.id = $1 AND r.user_id = $2
-        FOR UPDATE`,
+        FOR UPDATE OF r`,
       [id, userId]
     );
 
