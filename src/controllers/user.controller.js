@@ -70,16 +70,20 @@ exports.getMe = async (req, res) => {
          COALESCE(u.payment_linked, false) AS payment_linked,
          COALESCE(u.driver_verified, false) AS driver_verified,
          COALESCE((
-           SELECT BOOL_OR(v.vehicle_verified)
+           SELECT v.vehicle_verified
            FROM vehicles v
            WHERE v.user_id = u.id
+           ORDER BY v.created_at DESC, v.id DESC
+           LIMIT 1
          ), false) AS vehicle_verified,
          (CASE
            WHEN u.one_way_verified THEN 5
            WHEN u.driver_verified AND COALESCE((
-             SELECT BOOL_OR(v.vehicle_verified)
+             SELECT v.vehicle_verified
              FROM vehicles v
              WHERE v.user_id = u.id
+             ORDER BY v.created_at DESC, v.id DESC
+             LIMIT 1
            ), false) THEN 4
            WHEN u.payment_linked THEN 3
            WHEN u.email_verified AND u.phone_verified THEN 2
