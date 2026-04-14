@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS rides (
   vehicle_id INT REFERENCES vehicles(id) ON DELETE SET NULL,
   start_lat NUMERIC(9,6),
   start_lng NUMERIC(9,6),
+  start_location TEXT,
   end_lat NUMERIC(9,6),
   end_lng NUMERIC(9,6),
   end_location TEXT,
@@ -164,6 +165,7 @@ ALTER TABLE bookings ADD COLUMN IF NOT EXISTS attendance_marked_at TIMESTAMP;
 ALTER TABLE bookings ADD COLUMN IF NOT EXISTS attendance_marked_by INT REFERENCES users(id) ON DELETE SET NULL;
 
 ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS vehicle_verified BOOLEAN DEFAULT FALSE;
+ALTER TABLE rides ADD COLUMN IF NOT EXISTS start_location TEXT;
 
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS from_user_id INT REFERENCES users(id) ON DELETE SET NULL;
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS from_user_name TEXT;

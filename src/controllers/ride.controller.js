@@ -6,6 +6,11 @@ const {
   haversineMeters,
 } = require("../utils/rideSearch");
 
+function sanitizeText(value) {
+  const normalized = String(value || "").trim();
+  return normalized || null;
+}
+
 function normalizePersonName(name, fallback = "Жолооч") {
   const value = String(name || "").trim();
   return value || fallback;
@@ -65,6 +70,7 @@ exports.createRide = async (req, res) => {
     const {
       start,
       end,
+      start_location,
       end_location,
       polyline,
       price,
@@ -89,16 +95,17 @@ exports.createRide = async (req, res) => {
 
     const result = await pool.query(
       `INSERT INTO rides
-       (user_id, vehicle_id, start_lat, start_lng, end_lat, end_lng,
+       (user_id, vehicle_id, start_lat, start_lng, start_location, end_lat, end_lng,
         end_location, polyline, price, seats_total, seats_taken,
         ride_date, start_time, days, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,0,$11,$12,$13,'active')
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,0,$12,$13,$14,'active')
        RETURNING *`,
       [
         userId,
         vehicle_id,
         start.lat,
         start.lng,
+        sanitizeText(start_location),
         end.lat,
         end.lng,
         end_location,
@@ -128,6 +135,7 @@ exports.getRides = async (req, res) => {
          r.start_time,
          r.start_lat,
          r.start_lng,
+         r.start_location,
          r.end_lat,
          r.end_lng,
          r.end_location,
@@ -184,6 +192,7 @@ exports.searchRides = async (req, res) => {
          r.start_time,
          r.start_lat,
          r.start_lng,
+         r.start_location,
          r.end_lat,
          r.end_lng,
          r.end_location,
@@ -328,6 +337,7 @@ exports.getActiveRide = async (req, res) => {
 
     const result = await pool.query(
       `SELECT r.id,
+              r.start_location,
               r.end_location,
               r.ride_date,
               r.start_time,
