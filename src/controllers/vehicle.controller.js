@@ -1,4 +1,5 @@
 const pool = require("../db");
+const CYRILLIC_PLATE_REGEX = /^[\u0400-\u04FF]{3}\d{4}$/u;
 
 async function ensureVehicleVerificationColumn() {
   await pool.query(
@@ -14,8 +15,17 @@ const sanitizeText = (value) => {
 
 const sanitizePlate = (value) => {
   const normalized = sanitizeText(value);
-  return normalized ? normalized.toUpperCase() : null;
+  if (!normalized) return null;
+
+  const upper = normalized.toUpperCase();
+  const letters = (upper.match(/[\u0400-\u04FF]/gu) || []).slice(0, 3).join("");
+  const digits = (upper.match(/\d/g) || []).slice(0, 4).join("");
+  const plate = `${letters}${digits}`;
+  return plate || null;
 };
+
+const isValidPlate = (value) =>
+  typeof value === "string" && CYRILLIC_PLATE_REGEX.test(value);
 
 const sanitizeSeats = (value) => {
   if (value === undefined || value === null || value === "") return null;
@@ -37,6 +47,12 @@ exports.createVehicle = async (req, res) => {
 
     if (!brand || !model || !plate_number) {
       return res.status(400).json({ message: "Brand, model and plate number are required" });
+    }
+
+    if (!isValidPlate(plate_number)) {
+      return res.status(400).json({
+        message: "Plate number must be 3 Cyrillic letters followed by 4 digits",
+      });
     }
 
     const result = await pool.query(
@@ -108,6 +124,12 @@ exports.updateMyVehicle = async (req, res) => {
 
     if (!nextBrand || !nextModel || !nextPlate) {
       return res.status(400).json({ message: "Brand, model and plate number are required" });
+    }
+
+    if (!isValidPlate(nextPlate)) {
+      return res.status(400).json({
+        message: "Plate number must be 3 Cyrillic letters followed by 4 digits",
+      });
     }
 
     const result = await pool.query(

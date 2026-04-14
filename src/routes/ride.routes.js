@@ -5,6 +5,7 @@ const auth = require("../middleware/auth");
 const {
   createRide,
   getRides,
+  searchRides,
   getRideById,
   getMyRides,
   getMyAllRides,
@@ -17,6 +18,7 @@ const {
 
 // 🌍 Public — бүх active rides
 router.get("/", getRides);
+router.post("/search", searchRides);
 
 // 🔐 Auth required
 router.get("/mine", auth, getMyRides);

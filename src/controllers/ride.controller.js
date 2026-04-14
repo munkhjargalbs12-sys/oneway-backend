@@ -1,5 +1,10 @@
 const pool = require("../db");
 const { createNotification } = require("../utils/notify");
+const {
+  getDestinationDistanceMeters,
+  getRideScope,
+  haversineMeters,
+} = require("../utils/rideSearch");
 
 function normalizePersonName(name, fallback = "Жолооч") {
   const value = String(name || "").trim();
@@ -121,6 +126,10 @@ exports.getRides = async (req, res) => {
          r.status,
          r.ride_date,
          r.start_time,
+         r.start_lat,
+         r.start_lng,
+         r.end_lat,
+         r.end_lng,
          r.end_location,
          r.price,
          (r.seats_total - r.seats_taken) AS available_seats,
@@ -141,6 +150,112 @@ exports.getRides = async (req, res) => {
   } catch (err) {
     console.error("getRides error:", err);
     res.status(500).json({ error: "Failed to get rides" });
+  }
+};
+
+exports.searchRides = async (req, res) => {
+  try {
+    const startLat = Number(req.body?.start?.lat);
+    const startLng = Number(req.body?.start?.lng);
+    const endLat = Number(req.body?.end?.lat);
+    const endLng = Number(req.body?.end?.lng);
+    const radiusMeters = Number(req.body?.radius_m);
+    const requestedScope =
+      String(req.body?.scope || "").toLowerCase() === "intercity"
+        ? "intercity"
+        : "local";
+
+    if (
+      !Number.isFinite(startLat) ||
+      !Number.isFinite(startLng) ||
+      !Number.isFinite(endLat) ||
+      !Number.isFinite(endLng) ||
+      !Number.isFinite(radiusMeters) ||
+      radiusMeters <= 0
+    ) {
+      return res.status(400).json({ error: "Invalid search coordinates or radius" });
+    }
+
+    const result = await pool.query(
+      `SELECT
+         r.id,
+         r.status,
+         r.ride_date,
+         r.start_time,
+         r.start_lat,
+         r.start_lng,
+         r.end_lat,
+         r.end_lng,
+         r.end_location,
+         r.polyline,
+         r.price,
+         (r.seats_total - r.seats_taken) AS available_seats,
+         v.brand,
+         v.model,
+         v.color,
+         v.plate_number,
+         u.name AS driver_name,
+         u.avatar_id
+       FROM rides r
+       LEFT JOIN vehicles v ON r.vehicle_id = v.id
+       LEFT JOIN users u ON r.user_id = u.id
+       WHERE r.status IN ('active', 'scheduled', 'pending')`
+    );
+
+    const startPoint = { lat: startLat, lng: startLng };
+    const endPoint = { lat: endLat, lng: endLng };
+
+    const matches = result.rows
+      .map((ride) => {
+        const scope = getRideScope(ride);
+        if (scope !== requestedScope) {
+          return null;
+        }
+
+        const originDistance = haversineMeters(startPoint, {
+          lat: ride.start_lat,
+          lng: ride.start_lng,
+        });
+        const destinationDistance = getDestinationDistanceMeters(ride, endPoint);
+
+        if (
+          !Number.isFinite(originDistance) ||
+          !Number.isFinite(destinationDistance) ||
+          originDistance > radiusMeters ||
+          destinationDistance > radiusMeters
+        ) {
+          return null;
+        }
+
+        return {
+          ...ride,
+          scope,
+          origin_distance_m: Math.round(originDistance),
+          destination_distance_m: Math.round(destinationDistance),
+          match_score: Math.round(originDistance + destinationDistance),
+        };
+      })
+      .filter(Boolean)
+      .sort((first, second) => {
+        const scoreDelta = Number(first.match_score || 0) - Number(second.match_score || 0);
+        if (scoreDelta !== 0) {
+          return scoreDelta;
+        }
+
+        const firstTs = new Date(
+          `${first.ride_date || ""}T${String(first.start_time || "00:00").slice(0, 5)}:00`
+        ).getTime();
+        const secondTs = new Date(
+          `${second.ride_date || ""}T${String(second.start_time || "00:00").slice(0, 5)}:00`
+        ).getTime();
+
+        return firstTs - secondTs;
+      });
+
+    res.json(matches);
+  } catch (err) {
+    console.error("searchRides error:", err);
+    res.status(500).json({ error: "Failed to search rides" });
   }
 };
 
