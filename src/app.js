@@ -11,6 +11,7 @@ const notificationRoutes = require("./routes/notification.routes");
 const routeRoutes = require("./routes/route.routes");
 const placeRoutes = require("./routes/place.routes");
 const walletRoutes = require("./routes/wallet.routes");
+const adminRoutes = require("./routes/admin.routes");
 
 const app = express();
 
@@ -31,5 +32,6 @@ app.use("/notifications", notificationRoutes);
 app.use("/route", routeRoutes); // 
 app.use("/places", placeRoutes);
 app.use("/wallet", walletRoutes);
+app.use("/admin", adminRoutes);
 
 module.exports = app;

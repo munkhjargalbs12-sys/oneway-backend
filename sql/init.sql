@@ -130,6 +130,27 @@ CREATE TABLE IF NOT EXISTS email_verification_codes (
   created_at TIMESTAMP DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS admin_users (
+  id SERIAL PRIMARY KEY,
+  email TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  full_name TEXT NOT NULL,
+  role VARCHAR(20) DEFAULT 'super_admin',
+  is_active BOOLEAN DEFAULT TRUE,
+  last_login_at TIMESTAMP,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS admin_audit_logs (
+  id SERIAL PRIMARY KEY,
+  admin_user_id INT REFERENCES admin_users(id) ON DELETE SET NULL,
+  action TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id INT,
+  meta JSONB,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
 -- Backfill / compatibility for existing DBs
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE;
@@ -175,11 +196,21 @@ ALTER TABLE notifications ADD COLUMN IF NOT EXISTS booking_id INT REFERENCES boo
 
 ALTER TABLE email_verification_codes ADD COLUMN IF NOT EXISTS consumed_at TIMESTAMP;
 
+ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'super_admin';
+ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
+ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP;
+
 CREATE INDEX IF NOT EXISTS idx_email_verification_codes_user_id
   ON email_verification_codes(user_id);
 
 CREATE INDEX IF NOT EXISTS idx_email_verification_codes_expires_at
   ON email_verification_codes(expires_at);
+
+CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_admin_user_id
+  ON admin_audit_logs(admin_user_id);
+
+CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_created_at
+  ON admin_audit_logs(created_at);
 
 UPDATE users
 SET rating = 1
