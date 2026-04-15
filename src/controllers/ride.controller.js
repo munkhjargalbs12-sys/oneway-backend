@@ -276,7 +276,7 @@ exports.getMyRides = async (req, res) => {
       `SELECT r.*, v.brand, v.model, v.color, v.plate_number
        FROM rides r
        LEFT JOIN vehicles v ON r.vehicle_id = v.id
-       WHERE r.user_id = $1 AND r.status IN ('active','started')
+       WHERE r.user_id = $1 AND r.status IN ('active','full','scheduled','pending','started')
        ORDER BY r.ride_date DESC`,
       [userId]
     );
@@ -348,7 +348,7 @@ exports.getActiveRide = async (req, res) => {
        FROM rides r
        LEFT JOIN vehicles v ON r.vehicle_id = v.id
        WHERE r.user_id = $1
-       AND r.status IN ('active','started')
+       AND r.status IN ('active','full','scheduled','pending','started')
        ORDER BY r.ride_date ASC
        LIMIT 1`,
       [userId]

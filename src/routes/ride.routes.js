@@ -15,6 +15,10 @@ const {
   completeRide,
   cancelRide,
 } = require("../controllers/ride.controller");
+const {
+  syncRideMeetupPresence,
+  getRideMeetupPresence,
+} = require("../controllers/ridePresence.controller");
 
 // 🌍 Public — бүх active rides
 router.get("/", getRides);
@@ -28,6 +32,8 @@ router.get("/history", auth, getMyRideHistory);
 router.post("/", auth, createRide);
 
 // 🚦 Ride lifecycle
+router.get("/:id/presence", auth, getRideMeetupPresence);
+router.post("/:id/presence", auth, syncRideMeetupPresence);
 router.patch("/:id/start", auth, startRide);
 router.patch("/:id/complete", auth, completeRide);
 router.patch("/:id/cancel", auth, cancelRide);

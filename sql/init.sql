@@ -110,6 +110,28 @@ CREATE TABLE IF NOT EXISTS notifications (
   created_at TIMESTAMP DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS ride_presence (
+  id SERIAL PRIMARY KEY,
+  ride_id INT REFERENCES rides(id) ON DELETE CASCADE,
+  user_id INT REFERENCES users(id) ON DELETE CASCADE,
+  booking_id INT REFERENCES bookings(id) ON DELETE SET NULL,
+  role VARCHAR(20) NOT NULL,
+  latitude NUMERIC(9,6),
+  longitude NUMERIC(9,6),
+  accuracy_meters NUMERIC(8,2),
+  distance_to_start_meters NUMERIC(8,2),
+  distance_to_driver_meters NUMERIC(8,2),
+  within_start_radius BOOLEAN DEFAULT FALSE,
+  within_driver_radius BOOLEAN DEFAULT FALSE,
+  source VARCHAR(30) DEFAULT 'none',
+  dwell_started_at TIMESTAMP,
+  arrived_at TIMESTAMP,
+  last_seen_at TIMESTAMP DEFAULT NOW(),
+  updated_at TIMESTAMP DEFAULT NOW(),
+  created_at TIMESTAMP DEFAULT NOW(),
+  CONSTRAINT ride_presence_unique_ride_user UNIQUE (ride_id, user_id)
+);
+
 -- Wallet transactions
 CREATE TABLE IF NOT EXISTS wallet_transactions (
   id SERIAL PRIMARY KEY,
@@ -194,6 +216,34 @@ ALTER TABLE notifications ADD COLUMN IF NOT EXISTS from_avatar_id VARCHAR(100);
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS ride_id INT REFERENCES rides(id) ON DELETE SET NULL;
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS booking_id INT REFERENCES bookings(id) ON DELETE SET NULL;
 
+ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS booking_id INT REFERENCES bookings(id) ON DELETE SET NULL;
+ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS role VARCHAR(20);
+ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS latitude NUMERIC(9,6);
+ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS longitude NUMERIC(9,6);
+ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS accuracy_meters NUMERIC(8,2);
+ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS distance_to_start_meters NUMERIC(8,2);
+ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS distance_to_driver_meters NUMERIC(8,2);
+ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS within_start_radius BOOLEAN DEFAULT FALSE;
+ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS within_driver_radius BOOLEAN DEFAULT FALSE;
+ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS source VARCHAR(30) DEFAULT 'none';
+ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS dwell_started_at TIMESTAMP;
+ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS arrived_at TIMESTAMP;
+ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP DEFAULT NOW();
+ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
+ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_constraint
+     WHERE conname = 'ride_presence_unique_ride_user'
+  ) THEN
+    ALTER TABLE ride_presence
+      ADD CONSTRAINT ride_presence_unique_ride_user UNIQUE (ride_id, user_id);
+  END IF;
+END $$;
+
 ALTER TABLE email_verification_codes ADD COLUMN IF NOT EXISTS consumed_at TIMESTAMP;
 
 ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'super_admin';
@@ -211,6 +261,15 @@ CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_admin_user_id
 
 CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_created_at
   ON admin_audit_logs(created_at);
+
+CREATE INDEX IF NOT EXISTS idx_ride_presence_ride_id
+  ON ride_presence(ride_id);
+
+CREATE INDEX IF NOT EXISTS idx_ride_presence_user_id
+  ON ride_presence(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_ride_presence_arrived_at
+  ON ride_presence(arrived_at);
 
 UPDATE users
 SET rating = 1

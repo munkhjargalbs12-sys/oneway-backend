@@ -81,6 +81,8 @@ exports.createNotification = async (payload) => {
       fromAvatarId = null,
       rideId = null,
       bookingId = null,
+      role = null,
+      data = null,
     } = payload || {};
 
     const baseValues = {
@@ -141,7 +143,9 @@ exports.createNotification = async (payload) => {
           relatedId: relatedId || null,
           rideId: rideId || null,
           bookingId: bookingId || null,
+          role: role || null,
           screen: "/notifications",
+          ...(data && typeof data === "object" ? data : {}),
         },
         sound: "default",
       }).catch((pushErr) => {
