@@ -2,6 +2,15 @@ const pool = require("../db");
 
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 
+async function fetchWithFallback(...args) {
+  if (typeof fetch === "function") {
+    return fetch(...args);
+  }
+
+  const { default: nodeFetch } = await import("node-fetch");
+  return nodeFetch(...args);
+}
+
 function isExpoPushToken(token) {
   const value = String(token || "").trim();
   return /^(ExponentPushToken|ExpoPushToken)\[[^\]]+\]$/.test(value);
@@ -34,7 +43,7 @@ async function sendExpoPushNotification(message) {
     headers.Authorization = `Bearer ${accessToken}`;
   }
 
-  const response = await fetch(EXPO_PUSH_URL, {
+  const response = await fetchWithFallback(EXPO_PUSH_URL, {
     method: "POST",
     headers,
     body: JSON.stringify(message),
