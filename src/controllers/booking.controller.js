@@ -1,6 +1,8 @@
 ﻿const pool = require("../db");
 const { createNotification } = require("../utils/notify");
 
+const { sendRideReminderNotifications } = require("../services/rideReminderScheduler");
+
 async function getBookingMeta(client) {
   const { rows } = await client.query(
     `SELECT column_name
@@ -541,6 +543,15 @@ exports.approveBooking = async (req, res) => {
       fromUserId: driverId,
       rideId: Number(row.ride_id),
       bookingId,
+    });
+
+    await sendRideReminderNotifications({
+      rideId: Number(row.ride_id),
+    }).catch((error) => {
+      console.error(
+        "approve booking reminder dispatch error:",
+        error?.message || error
+      );
     });
 
     res.json({

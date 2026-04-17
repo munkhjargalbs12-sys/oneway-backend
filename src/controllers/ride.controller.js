@@ -1,5 +1,6 @@
 const pool = require("../db");
 const { createNotification } = require("../utils/notify");
+const { sendRideReminderNotifications } = require("../services/rideReminderScheduler");
 const {
   getDestinationDistanceMeters,
   getRideScope,
@@ -117,6 +118,12 @@ exports.createRide = async (req, res) => {
         days,
       ]
     );
+
+    await sendRideReminderNotifications({
+      rideId: Number(result.rows[0]?.id),
+    }).catch((error) => {
+      console.error("create ride reminder dispatch error:", error?.message || error);
+    });
 
     res.status(201).json(result.rows[0]);
   } catch (err) {

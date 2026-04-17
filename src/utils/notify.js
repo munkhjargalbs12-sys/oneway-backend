@@ -1,6 +1,8 @@
 const pool = require("../db");
 const { sendPushToUser } = require("./push");
 
+const RIDE_LEVEL_DEDUPED_TYPES = new Set(["ride_reminder", "ride_started_auto"]);
+
 async function findDuplicateNotification(existingColumns, payload) {
   const normalizedType = String(payload?.type || "").trim().toLowerCase();
   const userId = Number(payload?.userId);
@@ -65,6 +67,32 @@ async function findDuplicateNotification(existingColumns, payload) {
     }
   }
 
+  if (
+    RIDE_LEVEL_DEDUPED_TYPES.has(normalizedType) &&
+    existingColumns.has("user_id") &&
+    existingColumns.has("ride_id") &&
+    existingColumns.has("type") &&
+    Number.isFinite(userId) &&
+    userId > 0 &&
+    Number.isFinite(rideId) &&
+    rideId > 0
+  ) {
+    const duplicateByRide = await pool.query(
+      `SELECT id
+         FROM notifications
+        WHERE user_id = $1
+          AND ride_id = $2
+          AND LOWER(COALESCE(type, '')) = $3
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1`,
+      [userId, rideId, normalizedType]
+    );
+
+    if (duplicateByRide.rowCount > 0) {
+      return duplicateByRide.rows[0];
+    }
+  }
+
   return null;
 }
 
@@ -116,7 +144,7 @@ exports.createNotification = async (payload) => {
       fromUserId,
       rideId,
     });
-    if (duplicate) return duplicate;
+    if (duplicate) return { ...duplicate, created: false };
 
     const cols = keys.filter((k) => existing.has(k) && typeof baseValues[k] !== "undefined");
     if (cols.length === 0) return;
@@ -131,7 +159,9 @@ exports.createNotification = async (payload) => {
       values
     );
 
-    const inserted = result.rows[0] || null;
+    const inserted = result.rows[0]
+      ? { ...result.rows[0], created: true }
+      : null;
 
     if (inserted?.id && Number.isFinite(Number(userId)) && title && body) {
       sendPushToUser(Number(userId), {
