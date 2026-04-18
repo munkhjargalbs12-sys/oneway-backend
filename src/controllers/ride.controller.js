@@ -448,13 +448,10 @@ exports.cancelRide = async (req, res) => {
               r.status,
               r.end_location,
               r.ride_date,
-              r.start_time,
-              u.name AS driver_name,
-              u.avatar_id AS driver_avatar_id
+              r.start_time
          FROM rides r
-         LEFT JOIN users u ON u.id = r.user_id
         WHERE r.id = $1 AND r.user_id = $2
-        FOR UPDATE OF r`,
+        FOR UPDATE`,
       [id, userId]
     );
 
@@ -464,6 +461,13 @@ exports.cancelRide = async (req, res) => {
     }
 
     const ride = rideRes.rows[0];
+    const driverRes = await client.query(
+      `SELECT name, avatar_id
+         FROM users
+        WHERE id = $1`,
+      [Number(ride.user_id)]
+    );
+    const driver = driverRes.rows[0] || null;
     const rideStatus = String(ride.status || "").toLowerCase();
 
     if (rideStatus === "completed") {
@@ -492,7 +496,7 @@ exports.cancelRide = async (req, res) => {
 
     await client.query("COMMIT");
 
-    const driverName = normalizePersonName(ride.driver_name);
+    const driverName = normalizePersonName(driver?.name);
     await Promise.all(
       affectedBookingsRes.rows.map((booking) =>
         createNotification({
@@ -503,7 +507,7 @@ exports.cancelRide = async (req, res) => {
           relatedId: Number(ride.id),
           fromUserId: Number(userId),
           fromUserName: driverName,
-          fromAvatarId: ride.driver_avatar_id || null,
+          fromAvatarId: driver?.avatar_id || null,
           rideId: Number(ride.id),
           bookingId: Number(booking.id),
         })

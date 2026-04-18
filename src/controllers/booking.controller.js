@@ -753,12 +753,9 @@ exports.cancelMyBooking = async (req, res) => {
               r.seats_taken,
               r.ride_date,
               r.start_time,
-              r.end_location,
-              u.name AS driver_name,
-              u.avatar_id AS driver_avatar_id
+              r.end_location
          FROM bookings b
          JOIN rides r ON r.id = b.ride_id
-         LEFT JOIN users u ON u.id = r.user_id
         WHERE b.id = $1
         FOR UPDATE OF b, r`,
       [bookingId]
