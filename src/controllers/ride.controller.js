@@ -23,6 +23,10 @@ function rideStartExpression(alias = "r") {
   return `(((${alias}.ride_date)::text || ' ' || COALESCE((${alias}.start_time)::text, '00:00:00'))::timestamp)`;
 }
 
+function rideDateSelect(alias = "r") {
+  return `to_char(${alias}.ride_date, 'YYYY-MM-DD') AS ride_date`;
+}
+
 function rideStartInstantExpression(alias = "r") {
   return `(${rideStartExpression(alias)} AT TIME ZONE ${toSqlStringLiteral(getRideTimezone())})`;
 }
@@ -233,7 +237,7 @@ exports.createRide = async (req, res) => {
         end_location, polyline, price, seats_total, seats_taken,
         ride_date, start_time, days, status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,0,$12,$13,$14,'active')
-       RETURNING *`,
+       RETURNING *, to_char(ride_date, 'YYYY-MM-DD') AS ride_date`,
       [
         userId,
         vehicle_id,
@@ -272,7 +276,7 @@ exports.getRides = async (req, res) => {
          r.id,
          r.status,
          r.created_at,
-         r.ride_date,
+         ${rideDateSelect("r")},
          r.start_time,
          r.start_lat,
          r.start_lng,
@@ -331,7 +335,7 @@ exports.searchRides = async (req, res) => {
          r.id,
          r.status,
          r.created_at,
-         r.ride_date,
+         ${rideDateSelect("r")},
          r.start_time,
          r.start_lat,
          r.start_lng,
@@ -417,7 +421,7 @@ exports.getMyRides = async (req, res) => {
     const userId = req.user.id;
 
     const result = await pool.query(
-      `SELECT r.*, v.brand, v.model, v.color, v.plate_number
+      `SELECT r.*, ${rideDateSelect("r")}, v.brand, v.model, v.color, v.plate_number
        FROM rides r
        LEFT JOIN vehicles v ON r.vehicle_id = v.id
        WHERE r.user_id = $1 AND r.status IN ('active','full','scheduled','pending','started')
@@ -440,7 +444,7 @@ exports.getMyAllRides = async (req, res) => {
     await ensureRideHistoryHidesTable(client);
 
     const result = await client.query(
-      `SELECT r.*, v.brand, v.model, v.color, v.plate_number
+      `SELECT r.*, ${rideDateSelect("r")}, v.brand, v.model, v.color, v.plate_number
        FROM rides r
        LEFT JOIN vehicles v ON r.vehicle_id = v.id
        LEFT JOIN ride_history_hides rhh ON rhh.ride_id = r.id AND rhh.user_id = $1
@@ -464,7 +468,7 @@ exports.getRideById = async (req, res) => {
     const { id } = req.params;
 
     const result = await pool.query(
-      `SELECT r.*, v.brand, v.model, v.color, v.plate_number
+      `SELECT r.*, ${rideDateSelect("r")}, v.brand, v.model, v.color, v.plate_number
        FROM rides r
        LEFT JOIN vehicles v ON r.vehicle_id = v.id
        WHERE r.id = $1`,
@@ -490,7 +494,7 @@ exports.getActiveRide = async (req, res) => {
       `SELECT r.id,
               r.start_location,
               r.end_location,
-              r.ride_date,
+              ${rideDateSelect("r")},
               r.start_time,
               v.brand,
               v.model,
@@ -523,7 +527,7 @@ exports.getMyRideHistory = async (req, res) => {
     await ensureRideHistoryHidesTable(client);
 
     const result = await client.query(
-      `SELECT r.*, v.brand, v.model, v.color, v.plate_number
+      `SELECT r.*, ${rideDateSelect("r")}, v.brand, v.model, v.color, v.plate_number
        FROM rides r
        LEFT JOIN vehicles v ON r.vehicle_id = v.id
        LEFT JOIN ride_history_hides rhh ON rhh.ride_id = r.id AND rhh.user_id = $1
@@ -652,7 +656,7 @@ exports.cancelRide = async (req, res) => {
               r.user_id,
               r.status,
               r.end_location,
-              r.ride_date,
+              ${rideDateSelect("r")},
               r.start_time
          FROM rides r
         WHERE r.id = $1 AND r.user_id = $2
