@@ -107,7 +107,15 @@ CREATE TABLE IF NOT EXISTS notifications (
   ride_id INT REFERENCES rides(id) ON DELETE SET NULL,
   booking_id INT REFERENCES bookings(id) ON DELETE SET NULL,
   is_read BOOLEAN DEFAULT FALSE,
+  hidden_at TIMESTAMP,
   created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS ride_history_hides (
+  user_id INT REFERENCES users(id) ON DELETE CASCADE,
+  ride_id INT REFERENCES rides(id) ON DELETE CASCADE,
+  hidden_at TIMESTAMP DEFAULT NOW(),
+  PRIMARY KEY (user_id, ride_id)
 );
 
 CREATE TABLE IF NOT EXISTS ride_presence (
@@ -215,6 +223,7 @@ ALTER TABLE notifications ADD COLUMN IF NOT EXISTS from_user_name TEXT;
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS from_avatar_id VARCHAR(100);
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS ride_id INT REFERENCES rides(id) ON DELETE SET NULL;
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS booking_id INT REFERENCES bookings(id) ON DELETE SET NULL;
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS hidden_at TIMESTAMP;
 
 ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS booking_id INT REFERENCES bookings(id) ON DELETE SET NULL;
 ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS role VARCHAR(20);

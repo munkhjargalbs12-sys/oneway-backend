@@ -6,6 +6,12 @@ function isGenericName(v) {
   return !s || s === "хэрэглэгч" || s === "хэрэлэгч" || s === "user";
 }
 
+async function ensureNotificationHiddenColumn(client) {
+  await client.query(
+    "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS hidden_at TIMESTAMP"
+  );
+}
+
 async function getNotificationMeta(client) {
   const { rows } = await client.query(
     `SELECT table_name, column_name
@@ -30,6 +36,7 @@ exports.getMyNotifications = async (req, res) => {
   const client = await pool.connect();
   try {
     const userId = req.user.id;
+    await ensureNotificationHiddenColumn(client);
     const meta = await getNotificationMeta(client);
     const selectParts = ["n.*"];
     let joinClause = "";
@@ -52,6 +59,7 @@ exports.getMyNotifications = async (req, res) => {
          FROM notifications n
          ${joinClause}
         WHERE n.user_id = $1
+        AND n.hidden_at IS NULL
         ORDER BY n.created_at DESC`,
       [userId]
     );
@@ -116,6 +124,35 @@ exports.markAsRead = async (req, res) => {
   } catch (err) {
     console.error("markAsRead error:", err);
     res.status(500).json({ error: "Failed to update notification" });
+  }
+};
+
+exports.hideNotification = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const userId = req.user.id;
+    const { id } = req.params;
+
+    await ensureNotificationHiddenColumn(client);
+
+    const result = await client.query(
+      `UPDATE notifications
+       SET hidden_at = NOW(), is_read = TRUE
+       WHERE id = $1 AND user_id = $2
+       RETURNING id`,
+      [id, userId]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Notification not found" });
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("hideNotification error:", err);
+    res.status(500).json({ error: "Failed to hide notification" });
+  } finally {
+    client.release();
   }
 };
 

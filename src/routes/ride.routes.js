@@ -11,6 +11,7 @@ const {
   getMyAllRides,
   getActiveRide,
   getMyRideHistory,
+  hideRideHistoryEntry,
   startRide,
   completeRide,
   cancelRide,
@@ -30,6 +31,7 @@ router.get("/mine/all", auth, getMyAllRides);
 router.get("/active", auth, getActiveRide);
 router.get("/history", auth, getMyRideHistory);
 router.post("/", auth, createRide);
+router.delete("/:id/history", auth, hideRideHistoryEntry);
 
 // 🚦 Ride lifecycle
 router.get("/:id/presence", auth, getRideMeetupPresence);

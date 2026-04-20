@@ -7,6 +7,29 @@ const {
   haversineMeters,
 } = require("../utils/rideSearch");
 
+function rideStartExpression(alias = "r") {
+  return `(((${alias}.ride_date)::text || ' ' || COALESCE((${alias}.start_time)::text, '00:00:00'))::timestamp)`;
+}
+
+function upcomingRideCondition(alias = "r") {
+  return `(${alias}.ride_date IS NULL OR ${rideStartExpression(alias)} >= NOW())`;
+}
+
+function pastRideCondition(alias = "r") {
+  return `(${alias}.ride_date IS NOT NULL AND ${rideStartExpression(alias)} < NOW())`;
+}
+
+async function ensureRideHistoryHidesTable(client) {
+  await client.query(
+    `CREATE TABLE IF NOT EXISTS ride_history_hides (
+       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+       ride_id INTEGER NOT NULL REFERENCES rides(id) ON DELETE CASCADE,
+       hidden_at TIMESTAMP DEFAULT NOW(),
+       PRIMARY KEY (user_id, ride_id)
+     )`
+  );
+}
+
 function sanitizeText(value) {
   const normalized = String(value || "").trim();
   return normalized || null;
@@ -138,6 +161,7 @@ exports.getRides = async (req, res) => {
       `SELECT
          r.id,
          r.status,
+         r.created_at,
          r.ride_date,
          r.start_time,
          r.start_lat,
@@ -158,7 +182,8 @@ exports.getRides = async (req, res) => {
        LEFT JOIN vehicles v ON r.vehicle_id = v.id
        LEFT JOIN users u ON r.user_id = u.id
        WHERE r.status IN ('active', 'scheduled', 'pending')
-       ORDER BY r.ride_date ASC, r.start_time ASC`
+       AND ${upcomingRideCondition("r")}
+       ORDER BY r.created_at DESC NULLS LAST, r.id DESC`
     );
 
     res.json(result.rows);
@@ -195,6 +220,7 @@ exports.searchRides = async (req, res) => {
       `SELECT
          r.id,
          r.status,
+         r.created_at,
          r.ride_date,
          r.start_time,
          r.start_lat,
@@ -215,7 +241,8 @@ exports.searchRides = async (req, res) => {
        FROM rides r
        LEFT JOIN vehicles v ON r.vehicle_id = v.id
        LEFT JOIN users u ON r.user_id = u.id
-       WHERE r.status IN ('active', 'scheduled', 'pending')`
+       WHERE r.status IN ('active', 'scheduled', 'pending')
+       AND ${upcomingRideCondition("r")}`
     );
 
     const startPoint = { lat: startLat, lng: startLng };
@@ -284,6 +311,7 @@ exports.getMyRides = async (req, res) => {
        FROM rides r
        LEFT JOIN vehicles v ON r.vehicle_id = v.id
        WHERE r.user_id = $1 AND r.status IN ('active','full','scheduled','pending','started')
+       AND ${upcomingRideCondition("r")}
        ORDER BY r.ride_date DESC`,
       [userId]
     );
@@ -296,14 +324,18 @@ exports.getMyRides = async (req, res) => {
 };
 
 exports.getMyAllRides = async (req, res) => {
+  const client = await pool.connect();
   try {
     const userId = req.user.id;
+    await ensureRideHistoryHidesTable(client);
 
-    const result = await pool.query(
+    const result = await client.query(
       `SELECT r.*, v.brand, v.model, v.color, v.plate_number
        FROM rides r
        LEFT JOIN vehicles v ON r.vehicle_id = v.id
+       LEFT JOIN ride_history_hides rhh ON rhh.ride_id = r.id AND rhh.user_id = $1
        WHERE r.user_id = $1
+       AND rhh.ride_id IS NULL
        ORDER BY r.ride_date DESC NULLS LAST, r.start_time DESC NULLS LAST, r.id DESC`,
       [userId]
     );
@@ -312,6 +344,8 @@ exports.getMyAllRides = async (req, res) => {
   } catch (err) {
     console.error("getMyAllRides error:", err);
     res.status(500).json({ error: "Failed to get all rides" });
+  } finally {
+    client.release();
   }
 };
 
@@ -356,6 +390,7 @@ exports.getActiveRide = async (req, res) => {
        LEFT JOIN vehicles v ON r.vehicle_id = v.id
        WHERE r.user_id = $1
        AND r.status IN ('active','full','scheduled','pending','started')
+       AND ${upcomingRideCondition("r")}
        ORDER BY r.ride_date ASC
        LIMIT 1`,
       [userId]
@@ -369,18 +404,25 @@ exports.getActiveRide = async (req, res) => {
 };
 
 exports.getMyRideHistory = async (req, res) => {
+  const client = await pool.connect();
   try {
     const userId = req.user.id;
+    await ensureRideHistoryHidesTable(client);
 
-    const result = await pool.query(
+    const result = await client.query(
       `SELECT r.*, v.brand, v.model, v.color, v.plate_number
        FROM rides r
        LEFT JOIN vehicles v ON r.vehicle_id = v.id
+       LEFT JOIN ride_history_hides rhh ON rhh.ride_id = r.id AND rhh.user_id = $1
        WHERE (
          r.user_id = $1
          OR r.id IN (SELECT ride_id FROM bookings WHERE user_id = $1)
        )
-       AND r.status IN ('completed', 'cancelled')
+       AND rhh.ride_id IS NULL
+       AND (
+         r.status IN ('completed', 'cancelled', 'canceled')
+         OR ${pastRideCondition("r")}
+       )
        ORDER BY r.ride_date DESC, r.start_time DESC`,
       [userId]
     );
@@ -389,6 +431,56 @@ exports.getMyRideHistory = async (req, res) => {
   } catch (err) {
     console.error("getMyRideHistory error:", err);
     res.status(500).json({ error: "Failed to get ride history" });
+  } finally {
+    client.release();
+  }
+};
+
+exports.hideRideHistoryEntry = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const userId = Number(req.user.id);
+    const rideId = Number(req.params.id);
+
+    if (!Number.isFinite(rideId) || rideId <= 0) {
+      return res.status(400).json({ error: "Invalid ride id" });
+    }
+
+    await ensureRideHistoryHidesTable(client);
+
+    const access = await client.query(
+      `SELECT r.id
+       FROM rides r
+       WHERE r.id = $1
+       AND (
+         r.user_id = $2
+         OR EXISTS (
+           SELECT 1 FROM bookings b
+           WHERE b.ride_id = r.id AND b.user_id = $2
+         )
+       )
+       LIMIT 1`,
+      [rideId, userId]
+    );
+
+    if (access.rowCount === 0) {
+      return res.status(404).json({ error: "Ride history entry not found" });
+    }
+
+    await client.query(
+      `INSERT INTO ride_history_hides (user_id, ride_id, hidden_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (user_id, ride_id)
+       DO UPDATE SET hidden_at = EXCLUDED.hidden_at`,
+      [userId, rideId]
+    );
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("hideRideHistoryEntry error:", err);
+    res.status(500).json({ error: "Failed to hide ride history entry" });
+  } finally {
+    client.release();
   }
 };
 
