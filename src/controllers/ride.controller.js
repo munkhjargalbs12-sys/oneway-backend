@@ -7,16 +7,36 @@ const {
   haversineMeters,
 } = require("../utils/rideSearch");
 
+const DEFAULT_RIDE_TIMEZONE = "Asia/Ulaanbaatar";
+const MIN_RIDE_START_LEAD_MINUTES = 5;
+
+function getRideTimezone() {
+  const value = String(process.env.RIDE_TIMEZONE || "").trim();
+  return value || DEFAULT_RIDE_TIMEZONE;
+}
+
+function toSqlStringLiteral(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
 function rideStartExpression(alias = "r") {
   return `(((${alias}.ride_date)::text || ' ' || COALESCE((${alias}.start_time)::text, '00:00:00'))::timestamp)`;
 }
 
+function rideStartInstantExpression(alias = "r") {
+  return `(${rideStartExpression(alias)} AT TIME ZONE ${toSqlStringLiteral(getRideTimezone())})`;
+}
+
 function upcomingRideCondition(alias = "r") {
-  return `(${alias}.ride_date IS NULL OR ${rideStartExpression(alias)} >= NOW())`;
+  return `(${alias}.ride_date IS NULL OR ${rideStartInstantExpression(alias)} >= NOW())`;
+}
+
+function currentRideCondition(alias = "r") {
+  return `(LOWER(COALESCE(${alias}.status, '')) = 'started' OR ${upcomingRideCondition(alias)})`;
 }
 
 function pastRideCondition(alias = "r") {
-  return `(${alias}.ride_date IS NOT NULL AND ${rideStartExpression(alias)} < NOW())`;
+  return `(${alias}.ride_date IS NOT NULL AND LOWER(COALESCE(${alias}.status, '')) <> 'started' AND ${rideStartInstantExpression(alias)} < NOW())`;
 }
 
 async function ensureRideHistoryHidesTable(client) {
@@ -33,6 +53,87 @@ async function ensureRideHistoryHidesTable(client) {
 function sanitizeText(value) {
   const normalized = String(value || "").trim();
   return normalized || null;
+}
+
+function parseRideStartDate(rideDate, startTime) {
+  const dateMatch = String(rideDate || "").trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const timeMatch = String(startTime || "")
+    .trim()
+    .match(/^(\d{2}):(\d{2})(?::(\d{2}))?$/);
+
+  if (!dateMatch || !timeMatch) {
+    return null;
+  }
+
+  const year = Number(dateMatch[1]);
+  const month = Number(dateMatch[2]);
+  const day = Number(dateMatch[3]);
+  const hour = Number(timeMatch[1]);
+  const minute = Number(timeMatch[2]);
+  const second = Number(timeMatch[3] || 0);
+
+  const value = new Date(year, month - 1, day, hour, minute, second, 0);
+  if (
+    Number.isNaN(value.getTime()) ||
+    value.getFullYear() !== year ||
+    value.getMonth() !== month - 1 ||
+    value.getDate() !== day ||
+    value.getHours() !== hour ||
+    value.getMinutes() !== minute ||
+    value.getSeconds() !== second
+  ) {
+    return null;
+  }
+
+  return value;
+}
+
+function getNowInRideTimezone(now = new Date()) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: getRideTimezone(),
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(now);
+    const partMap = Object.fromEntries(
+      parts
+        .filter((part) => part.type !== "literal")
+        .map((part) => [part.type, part.value])
+    );
+
+    return new Date(
+      Number(partMap.year),
+      Number(partMap.month) - 1,
+      Number(partMap.day),
+      Number(partMap.hour),
+      Number(partMap.minute),
+      Number(partMap.second || 0),
+      0
+    );
+  } catch {
+    return now;
+  }
+}
+
+function getRideStartValidationError(rideDate, startTime, now = new Date()) {
+  const rideStartDate = parseRideStartDate(rideDate, startTime);
+
+  if (!rideStartDate) {
+    return "Огноо эсвэл цагийн мэдээлэл буруу байна. Дахин сонгоно уу.";
+  }
+
+  const zonedNow = getNowInRideTimezone(now);
+  const minimumStartDate = new Date(zonedNow.getTime() + MIN_RIDE_START_LEAD_MINUTES * 60 * 1000);
+  if (rideStartDate.getTime() < minimumStartDate.getTime()) {
+    return `Эхлэх цаг өнгөрсөн эсвэл хэт ойрхон байна. Одоо цагаас дор хаяж ${MIN_RIDE_START_LEAD_MINUTES} минутын дараах цаг сонгоно уу.`;
+  }
+
+  return null;
 }
 
 function normalizePersonName(name, fallback = "Жолооч") {
@@ -107,6 +208,11 @@ exports.createRide = async (req, res) => {
 
     if (!start || !end || !seats || !ride_date || !start_time || !vehicle_id) {
       return res.status(400).json({ error: "Missing required fields" });
+    }
+
+    const rideStartValidationError = getRideStartValidationError(ride_date, start_time);
+    if (rideStartValidationError) {
+      return res.status(400).json({ error: rideStartValidationError });
     }
 
     const vehicleRes = await pool.query(
@@ -311,7 +417,7 @@ exports.getMyRides = async (req, res) => {
        FROM rides r
        LEFT JOIN vehicles v ON r.vehicle_id = v.id
        WHERE r.user_id = $1 AND r.status IN ('active','full','scheduled','pending','started')
-       AND ${upcomingRideCondition("r")}
+       AND ${currentRideCondition("r")}
        ORDER BY r.ride_date DESC`,
       [userId]
     );
@@ -390,8 +496,11 @@ exports.getActiveRide = async (req, res) => {
        LEFT JOIN vehicles v ON r.vehicle_id = v.id
        WHERE r.user_id = $1
        AND r.status IN ('active','full','scheduled','pending','started')
-       AND ${upcomingRideCondition("r")}
-       ORDER BY r.ride_date ASC
+       AND ${currentRideCondition("r")}
+       ORDER BY CASE WHEN LOWER(COALESCE(r.status, '')) = 'started' THEN 0 ELSE 1 END,
+                r.ride_date ASC,
+                r.start_time ASC,
+                r.id DESC
        LIMIT 1`,
       [userId]
     );
