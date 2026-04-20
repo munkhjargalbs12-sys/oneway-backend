@@ -134,6 +134,8 @@ CREATE TABLE IF NOT EXISTS ride_presence (
   source VARCHAR(30) DEFAULT 'none',
   dwell_started_at TIMESTAMP,
   arrived_at TIMESTAMP,
+  pin_confirmed_at TIMESTAMP,
+  pin_confirmed_by INT REFERENCES users(id) ON DELETE SET NULL,
   last_seen_at TIMESTAMP DEFAULT NOW(),
   updated_at TIMESTAMP DEFAULT NOW(),
   created_at TIMESTAMP DEFAULT NOW(),
@@ -237,6 +239,8 @@ ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS within_driver_radius BOOLEAN 
 ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS source VARCHAR(30) DEFAULT 'none';
 ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS dwell_started_at TIMESTAMP;
 ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS arrived_at TIMESTAMP;
+ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS pin_confirmed_at TIMESTAMP;
+ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS pin_confirmed_by INT REFERENCES users(id) ON DELETE SET NULL;
 ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP DEFAULT NOW();
 ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
 ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();

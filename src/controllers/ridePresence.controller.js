@@ -1,4 +1,5 @@
 const pool = require("../db");
+const crypto = require("crypto");
 const { createNotification } = require("../utils/notify");
 const { haversineMeters } = require("../utils/rideSearch");
 
@@ -9,9 +10,28 @@ const DRIVER_FRESHNESS_SECONDS = 2 * 60;
 const TRACKING_WINDOW_BEFORE_MINUTES = 30;
 const TRACKING_WINDOW_AFTER_MINUTES = 90;
 const MAX_ALLOWED_ACCURACY_METERS = 80;
+const MEETUP_PIN_LENGTH = 4;
+const MEETUP_PIN_REGEX = /^\d{4}$/;
 
 const NON_TRACKABLE_RIDE_STATUSES = new Set(["completed", "cancelled", "canceled"]);
 const STARTABLE_RIDE_STATUSES = ["active", "full", "scheduled", "pending"];
+
+let ridePresencePinColumnsReady = false;
+
+async function ensureRidePresencePinColumns(client) {
+  if (ridePresencePinColumnsReady) {
+    return;
+  }
+
+  await client.query(
+    "ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS pin_confirmed_at TIMESTAMP"
+  );
+  await client.query(
+    "ALTER TABLE ride_presence ADD COLUMN IF NOT EXISTS pin_confirmed_by INT REFERENCES users(id) ON DELETE SET NULL"
+  );
+
+  ridePresencePinColumnsReady = true;
+}
 
 function toNumber(value) {
   const parsed = Number(value);
@@ -78,11 +98,45 @@ function isFreshTimestamp(value, now = new Date(), freshnessSeconds = DRIVER_FRE
 }
 
 function roundDistance(value) {
-  if (!Number.isFinite(value)) {
+  if (value === null || typeof value === "undefined" || value === "") {
     return null;
   }
 
-  return Math.round(value * 10) / 10;
+  const distance = Number(value);
+  if (!Number.isFinite(distance)) {
+    return null;
+  }
+
+  return Math.round(distance * 10) / 10;
+}
+
+function normalizeMeetupPin(value) {
+  return String(value ?? "").replace(/\D/g, "").trim();
+}
+
+function normalizeDateSeed(value) {
+  if (!value) {
+    return "";
+  }
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toISOString();
+}
+
+function buildMeetupPin(ride) {
+  const secret = process.env.JWT_SECRET || process.env.SESSION_SECRET || "oneway-meetup-pin";
+  const createdAt = normalizeDateSeed(ride?.created_at);
+  const seed = [
+    Number(ride?.id) || 0,
+    Number(ride?.user_id) || 0,
+    createdAt,
+    String(ride?.ride_date || ""),
+    String(ride?.start_time || ""),
+  ].join(":");
+  const digest = crypto.createHmac("sha256", secret).update(seed).digest("hex");
+  const numeric = parseInt(digest.slice(0, 8), 16) % 10 ** MEETUP_PIN_LENGTH;
+
+  return String(numeric).padStart(MEETUP_PIN_LENGTH, "0");
 }
 
 function getEffectiveStartRadiusMeters(accuracyMeters) {
@@ -152,8 +206,9 @@ async function loadRideAccess(client, rideId, userId) {
             r.start_lng,
             r.start_location,
             r.end_location,
-            r.ride_date,
+            to_char(r.ride_date, 'YYYY-MM-DD') AS ride_date,
             r.start_time,
+            r.created_at,
             u.name AS driver_name,
             u.avatar_id AS driver_avatar_id
        FROM rides r
@@ -300,11 +355,13 @@ async function upsertPresenceRow(client, payload) {
        source,
        dwell_started_at,
        arrived_at,
+       pin_confirmed_at,
+       pin_confirmed_by,
        last_seen_at,
        updated_at
      )
      VALUES (
-       $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(), NOW()
+       $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW(), NOW()
      )
      ON CONFLICT (ride_id, user_id)
      DO UPDATE SET
@@ -320,6 +377,8 @@ async function upsertPresenceRow(client, payload) {
        source = EXCLUDED.source,
        dwell_started_at = EXCLUDED.dwell_started_at,
        arrived_at = EXCLUDED.arrived_at,
+       pin_confirmed_at = COALESCE(EXCLUDED.pin_confirmed_at, ride_presence.pin_confirmed_at),
+       pin_confirmed_by = COALESCE(EXCLUDED.pin_confirmed_by, ride_presence.pin_confirmed_by),
        last_seen_at = NOW(),
        updated_at = NOW()
      RETURNING *`,
@@ -338,13 +397,15 @@ async function upsertPresenceRow(client, payload) {
       payload.source,
       payload.dwell_started_at,
       payload.arrived_at,
+      payload.pin_confirmed_at,
+      payload.pin_confirmed_by,
     ]
   );
 
   return result.rows[0];
 }
 
-async function markPassengerArrived(client, bookingId) {
+async function markPassengerArrived(client, bookingId, markedByUserId = null) {
   if (!Number.isFinite(Number(bookingId)) || Number(bookingId) <= 0) {
     return;
   }
@@ -352,11 +413,69 @@ async function markPassengerArrived(client, bookingId) {
   await client.query(
     `UPDATE bookings
         SET attendance_status = 'arrived',
-            attendance_marked_at = COALESCE(attendance_marked_at, NOW())
+            attendance_marked_at = COALESCE(attendance_marked_at, NOW()),
+            attendance_marked_by = COALESCE(attendance_marked_by, $2)
       WHERE id = $1
         AND COALESCE(attendance_status, 'unknown') <> 'arrived'`,
-    [bookingId]
+    [bookingId, markedByUserId]
   );
+}
+
+async function maybeStartRide(client, ride, approvedBookings, summary) {
+  let rideStarted = false;
+  let pendingNotifications = [];
+  const rideStatus = normalizeStatus(ride.status);
+
+  if (!summary.ready_to_start || !STARTABLE_RIDE_STATUSES.includes(rideStatus)) {
+    return { rideStarted, pendingNotifications };
+  }
+
+  const startRes = await client.query(
+    `UPDATE rides
+        SET status = 'started'
+      WHERE id = $1
+        AND status = ANY($2::text[])
+    RETURNING id, status`,
+    [Number(ride.id), STARTABLE_RIDE_STATUSES]
+  );
+
+  rideStarted = startRes.rowCount > 0;
+
+  if (rideStarted) {
+    const driverName = normalizePersonName(ride.driver_name);
+    const title = "OneWay аялал амжилттай эхэллээ";
+    const body = buildRideStartedNotificationBody(ride);
+
+    pendingNotifications = [
+      {
+        userId: Number(ride.user_id),
+        title,
+        body,
+        type: "ride_started_auto",
+        relatedId: Number(ride.id),
+        fromUserId: Number(ride.user_id),
+        fromUserName: driverName,
+        fromAvatarId: ride.driver_avatar_id || null,
+        rideId: Number(ride.id),
+        role: "driver",
+      },
+      ...approvedBookings.map((booking) => ({
+        userId: Number(booking.user_id),
+        title,
+        body,
+        type: "ride_started_auto",
+        relatedId: Number(ride.id),
+        fromUserId: Number(ride.user_id),
+        fromUserName: driverName,
+        fromAvatarId: ride.driver_avatar_id || null,
+        rideId: Number(ride.id),
+        bookingId: Number(booking.id),
+        role: "rider",
+      })),
+    ];
+  }
+
+  return { rideStarted, pendingNotifications };
 }
 
 async function buildPresenceResponse(client, ride, actor) {
@@ -395,11 +514,15 @@ async function buildPresenceResponse(client, ride, actor) {
     approvedBookings: approvedBookings.rows,
     presenceByUserId,
   });
+  const driverPresence = presenceByUserId.get(Number(ride.user_id)) || null;
 
   return {
     ride_id: Number(ride.id),
     ride_status: String(ride.status || ""),
     actor_role: normalizeRole(actor?.role),
+    pin_confirmation_enabled: true,
+    meetup_pin_length: MEETUP_PIN_LENGTH,
+    meetup_code: normalizeRole(actor?.role) === "driver" ? buildMeetupPin(ride) : null,
     required_start_radius_meters: START_RADIUS_METERS,
     required_driver_radius_meters: DRIVER_RADIUS_METERS,
     required_dwell_seconds: DWELL_SECONDS_REQUIRED,
@@ -412,14 +535,17 @@ async function buildPresenceResponse(client, ride, actor) {
         name: normalizePersonName(ride.driver_name),
         avatar_id: ride.driver_avatar_id || null,
         attendance_status: summary.driver_arrived ? "arrived" : "unknown",
-        arrived: Boolean(presenceByUserId.get(Number(ride.user_id))?.arrived_at),
-        arrived_at: presenceByUserId.get(Number(ride.user_id))?.arrived_at || null,
-        last_seen_at: presenceByUserId.get(Number(ride.user_id))?.last_seen_at || null,
-        distance_to_start_meters: roundDistance(
-          Number(presenceByUserId.get(Number(ride.user_id))?.distance_to_start_meters)
-        ),
+        arrived: Boolean(driverPresence?.arrived_at),
+        arrived_at: driverPresence?.arrived_at || null,
+        pin_confirmed: Boolean(driverPresence?.pin_confirmed_at),
+        pin_confirmed_at: driverPresence?.pin_confirmed_at || null,
+        pin_confirmed_by: driverPresence?.pin_confirmed_by
+          ? Number(driverPresence.pin_confirmed_by)
+          : null,
+        last_seen_at: driverPresence?.last_seen_at || null,
+        distance_to_start_meters: roundDistance(driverPresence?.distance_to_start_meters),
         distance_to_driver_meters: null,
-        source: presenceByUserId.get(Number(ride.user_id))?.source || null,
+        source: driverPresence?.source || null,
       },
       ...approvedBookings.rows.map((booking) => {
         const row = presenceByUserId.get(Number(booking.user_id)) || null;
@@ -432,9 +558,12 @@ async function buildPresenceResponse(client, ride, actor) {
           attendance_status: String(booking.attendance_status || "unknown"),
           arrived: Boolean(row?.arrived_at) || normalizeStatus(booking.attendance_status) === "arrived",
           arrived_at: row?.arrived_at || null,
+          pin_confirmed: Boolean(row?.pin_confirmed_at),
+          pin_confirmed_at: row?.pin_confirmed_at || null,
+          pin_confirmed_by: row?.pin_confirmed_by ? Number(row.pin_confirmed_by) : null,
           last_seen_at: row?.last_seen_at || null,
-          distance_to_start_meters: roundDistance(Number(row?.distance_to_start_meters)),
-          distance_to_driver_meters: roundDistance(Number(row?.distance_to_driver_meters)),
+          distance_to_start_meters: roundDistance(row?.distance_to_start_meters),
+          distance_to_driver_meters: roundDistance(row?.distance_to_driver_meters),
           source: row?.source || null,
         };
       }),
@@ -467,6 +596,7 @@ exports.syncRideMeetupPresence = async (req, res) => {
   let pendingNotifications = [];
 
   try {
+    await ensureRidePresencePinColumns(client);
     await client.query("BEGIN");
 
     const access = await loadRideAccess(client, rideId, userId);
@@ -571,7 +701,7 @@ exports.syncRideMeetupPresence = async (req, res) => {
 
     const justArrived = !currentPresence?.arrived_at && Boolean(upsertedPresence.arrived_at);
     if (actor.role === "rider" && justArrived) {
-      await markPassengerArrived(client, actor.booking_id);
+      await markPassengerArrived(client, actor.booking_id, userId);
     }
 
     const summary = buildPresenceSummary({
@@ -676,6 +806,132 @@ exports.syncRideMeetupPresence = async (req, res) => {
   }
 };
 
+exports.confirmRideMeetupPin = async (req, res) => {
+  const rideId = Number(req.params.id);
+  const userId = Number(req.user.id);
+  const submittedPin = normalizeMeetupPin(req.body?.code ?? req.body?.pin);
+
+  if (!Number.isFinite(rideId) || rideId <= 0) {
+    return res.status(400).json({ error: "Invalid ride id" });
+  }
+
+  if (!MEETUP_PIN_REGEX.test(submittedPin)) {
+    return res.status(400).json({ error: "A valid 4 digit meetup PIN is required" });
+  }
+
+  const client = await pool.connect();
+  let pendingNotifications = [];
+
+  try {
+    await ensureRidePresencePinColumns(client);
+    await client.query("BEGIN");
+
+    const access = await loadRideAccess(client, rideId, userId);
+    if (access.error) {
+      await client.query("ROLLBACK");
+      return res.status(access.error.status).json(access.error.body);
+    }
+
+    const { ride, actor } = access;
+
+    if (actor.role !== "rider") {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Only passengers can confirm the meetup PIN" });
+    }
+
+    if (submittedPin !== buildMeetupPin(ride)) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Invalid meetup PIN" });
+    }
+
+    const approvedBookings = await getApprovedBookings(client, rideId);
+    const presenceByUserId = await getPresenceRows(client, rideId);
+    const nowIso = new Date().toISOString();
+    const currentPresence = presenceByUserId.get(userId) || null;
+    const currentDriverPresence = presenceByUserId.get(Number(ride.user_id)) || null;
+
+    const riderPresence = await upsertPresenceRow(client, {
+      ride_id: rideId,
+      user_id: userId,
+      booking_id: actor.booking_id,
+      role: "rider",
+      latitude: currentPresence?.latitude ?? null,
+      longitude: currentPresence?.longitude ?? null,
+      accuracy_meters: currentPresence?.accuracy_meters ?? null,
+      distance_to_start_meters: currentPresence?.distance_to_start_meters ?? null,
+      distance_to_driver_meters: currentPresence?.distance_to_driver_meters ?? null,
+      within_start_radius: Boolean(currentPresence?.within_start_radius),
+      within_driver_radius: Boolean(currentPresence?.within_driver_radius),
+      source: "meetup_pin",
+      dwell_started_at: currentPresence?.dwell_started_at || nowIso,
+      arrived_at: currentPresence?.arrived_at || nowIso,
+      pin_confirmed_at: currentPresence?.pin_confirmed_at || nowIso,
+      pin_confirmed_by: userId,
+    });
+
+    await markPassengerArrived(client, actor.booking_id, userId);
+    presenceByUserId.set(userId, riderPresence);
+
+    const driverPresence = await upsertPresenceRow(client, {
+      ride_id: rideId,
+      user_id: Number(ride.user_id),
+      booking_id: null,
+      role: "driver",
+      latitude: currentDriverPresence?.latitude ?? null,
+      longitude: currentDriverPresence?.longitude ?? null,
+      accuracy_meters: currentDriverPresence?.accuracy_meters ?? null,
+      distance_to_start_meters: currentDriverPresence?.distance_to_start_meters ?? null,
+      distance_to_driver_meters: null,
+      within_start_radius: Boolean(currentDriverPresence?.within_start_radius),
+      within_driver_radius: false,
+      source: currentDriverPresence?.source && currentDriverPresence.source !== "none"
+        ? currentDriverPresence.source
+        : "meetup_pin",
+      dwell_started_at: currentDriverPresence?.dwell_started_at || nowIso,
+      arrived_at: currentDriverPresence?.arrived_at || nowIso,
+      pin_confirmed_at: currentDriverPresence?.pin_confirmed_at || nowIso,
+      pin_confirmed_by: userId,
+    });
+
+    presenceByUserId.set(Number(ride.user_id), driverPresence);
+
+    const summary = buildPresenceSummary({
+      ride,
+      approvedBookings,
+      presenceByUserId,
+    });
+
+    const startResult = await maybeStartRide(client, ride, approvedBookings, summary);
+    const rideStarted = startResult.rideStarted;
+    pendingNotifications = startResult.pendingNotifications;
+    const response = await buildPresenceResponse(
+      client,
+      { ...ride, status: rideStarted ? "started" : ride.status },
+      actor
+    );
+
+    await client.query("COMMIT");
+
+    await Promise.all(
+      pendingNotifications.map((payload) => createNotification(payload))
+    );
+
+    return res.json({
+      ...response,
+      success: true,
+      pin_confirmed: true,
+      ride_started: rideStarted,
+      ride_status: rideStarted ? "started" : response.ride_status,
+    });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("confirm ride meetup pin error:", err);
+    return res.status(500).json({ error: "Failed to confirm meetup PIN" });
+  } finally {
+    client.release();
+  }
+};
+
 exports.getRideMeetupPresence = async (req, res) => {
   const rideId = Number(req.params.id);
   const userId = Number(req.user.id);
@@ -687,6 +943,7 @@ exports.getRideMeetupPresence = async (req, res) => {
   const client = await pool.connect();
 
   try {
+    await ensureRidePresencePinColumns(client);
     const access = await loadRideAccess(client, rideId, userId);
     if (access.error) {
       return res.status(access.error.status).json(access.error.body);

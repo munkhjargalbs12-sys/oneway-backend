@@ -19,6 +19,7 @@ const {
 const {
   syncRideMeetupPresence,
   getRideMeetupPresence,
+  confirmRideMeetupPin,
 } = require("../controllers/ridePresence.controller");
 
 // 🌍 Public — бүх active rides
@@ -36,6 +37,7 @@ router.delete("/:id/history", auth, hideRideHistoryEntry);
 // 🚦 Ride lifecycle
 router.get("/:id/presence", auth, getRideMeetupPresence);
 router.post("/:id/presence", auth, syncRideMeetupPresence);
+router.post("/:id/presence/pin", auth, confirmRideMeetupPin);
 router.patch("/:id/start", auth, startRide);
 router.patch("/:id/complete", auth, completeRide);
 router.patch("/:id/cancel", auth, cancelRide);
