@@ -27,8 +27,12 @@ function rideStartInstantExpression(alias = "r") {
   return `(${rideStartExpression(alias)} AT TIME ZONE ${toSqlStringLiteral(getRideTimezone())})`;
 }
 
+function localTodayExpression() {
+  return `((NOW() AT TIME ZONE ${toSqlStringLiteral(getRideTimezone())})::date)`;
+}
+
 function upcomingRideCondition(alias = "r") {
-  return `(${alias}.ride_date IS NULL OR ${rideStartInstantExpression(alias)} >= NOW())`;
+  return `(${alias}.ride_date IS NULL OR ${alias}.ride_date >= ${localTodayExpression()})`;
 }
 
 function currentRideCondition(alias = "r") {
@@ -36,7 +40,7 @@ function currentRideCondition(alias = "r") {
 }
 
 function pastRideCondition(alias = "r") {
-  return `(${alias}.ride_date IS NOT NULL AND LOWER(COALESCE(${alias}.status, '')) <> 'started' AND ${rideStartInstantExpression(alias)} < NOW())`;
+  return `(${alias}.ride_date IS NOT NULL AND LOWER(COALESCE(${alias}.status, '')) <> 'started' AND ${alias}.ride_date < ${localTodayExpression()})`;
 }
 
 async function ensureRideHistoryHidesTable(client) {
