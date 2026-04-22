@@ -199,22 +199,22 @@ function buildPresenceSummary({ ride, approvedBookings, presenceByUserId }) {
     return Boolean(row?.arrived_at);
   }).length;
 
-  const arrivedPassengerCount = approvedBookings.filter((booking) => {
+  const confirmedPassengerCount = approvedBookings.filter((booking) => {
     const row = presenceByUserId.get(Number(booking.user_id));
-    return Boolean(row?.pin_confirmed_at) || normalizeStatus(booking.attendance_status) === "arrived";
+    return Boolean(row?.pin_confirmed_at);
   }).length;
 
   const everyoneArrived =
     driverArrived &&
     approvedPassengerCount > 0 &&
-    arrivedPassengerCount === approvedPassengerCount;
+    confirmedPassengerCount === approvedPassengerCount;
 
   return {
     driver_arrived: driverArrived,
     approved_passenger_count: approvedPassengerCount,
     location_verified_passenger_count: locationVerifiedPassengerCount,
-    confirmed_passenger_count: arrivedPassengerCount,
-    arrived_passenger_count: arrivedPassengerCount,
+    confirmed_passenger_count: confirmedPassengerCount,
+    arrived_passenger_count: confirmedPassengerCount,
     ready_to_start: everyoneArrived,
   };
 }
@@ -579,7 +579,6 @@ async function buildPresenceResponse(client, ride, actor) {
         const row = presenceByUserId.get(Number(booking.user_id)) || null;
         const locationVerified = Boolean(row?.arrived_at);
         const pinConfirmed = Boolean(row?.pin_confirmed_at);
-        const attendanceArrived = normalizeStatus(booking.attendance_status) === "arrived";
         return {
           user_id: Number(booking.user_id),
           role: "rider",
@@ -589,7 +588,7 @@ async function buildPresenceResponse(client, ride, actor) {
           attendance_status: String(booking.attendance_status || "unknown"),
           location_verified: locationVerified,
           location_verified_at: row?.arrived_at || null,
-          arrived: pinConfirmed || attendanceArrived,
+          arrived: pinConfirmed,
           arrived_at: row?.arrived_at || null,
           pin_confirmed: pinConfirmed,
           pin_confirmed_at: row?.pin_confirmed_at || null,
