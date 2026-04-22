@@ -283,8 +283,29 @@ exports.getMyBookings = async (req, res) => {
          ${approvedAtExpr} AS approved_at,
          ${rejectedAtExpr} AS rejected_at,
          ${attendanceStatusExpr} AS attendance_status,
-         b.created_at
+         b.created_at AS booking_created_at,
+         r.status AS ride_status,
+         r.created_at AS ride_created_at,
+         to_char(r.ride_date, 'YYYY-MM-DD') AS ride_date,
+         TO_CHAR(r.start_time, 'HH24:MI:SS') AS start_time,
+         r.start_lat,
+         r.start_lng,
+         r.start_location,
+         r.end_lat,
+         r.end_lng,
+         r.end_location,
+         r.price,
+         (r.seats_total - r.seats_taken) AS available_seats,
+         v.brand,
+         v.model,
+         v.color,
+         v.plate_number,
+         u.name AS driver_name,
+         u.avatar_id
        FROM bookings b
+       LEFT JOIN rides r ON r.id = b.ride_id
+       LEFT JOIN vehicles v ON v.id = r.vehicle_id
+       LEFT JOIN users u ON u.id = r.user_id
        WHERE b.user_id = $1
        ORDER BY b.ride_id, b.created_at DESC, b.id DESC`,
       [userId]
@@ -299,7 +320,30 @@ exports.getMyBookings = async (req, res) => {
       approved_at: row.approved_at,
       rejected_at: row.rejected_at,
       attendance_status: row.attendance_status ? String(row.attendance_status) : null,
-      created_at: row.created_at,
+      created_at: row.booking_created_at,
+      ride: row.ride_status
+        ? {
+            id: Number(row.ride_id),
+            status: String(row.ride_status || ""),
+            created_at: row.ride_created_at,
+            ride_date: row.ride_date,
+            start_time: row.start_time,
+            start_lat: row.start_lat !== null ? Number(row.start_lat) : null,
+            start_lng: row.start_lng !== null ? Number(row.start_lng) : null,
+            start_location: row.start_location,
+            end_lat: row.end_lat !== null ? Number(row.end_lat) : null,
+            end_lng: row.end_lng !== null ? Number(row.end_lng) : null,
+            end_location: row.end_location,
+            price: row.price !== null ? Number(row.price) : null,
+            available_seats: Number(row.available_seats || 0),
+            brand: row.brand,
+            model: row.model,
+            color: row.color,
+            plate_number: row.plate_number,
+            driver_name: row.driver_name,
+            avatar_id: row.avatar_id,
+          }
+        : null,
     }));
 
     const activeBookings = bookings.filter((booking) =>

@@ -3,7 +3,7 @@ const crypto = require("crypto");
 const { createNotification } = require("../utils/notify");
 const { haversineMeters } = require("../utils/rideSearch");
 
-const START_RADIUS_METERS = 10;
+const START_RADIUS_METERS = 15;
 const TRACKING_WINDOW_BEFORE_MINUTES = 30;
 const TRACKING_WINDOW_AFTER_MINUTES = 90;
 const MAX_ALLOWED_ACCURACY_METERS = 80;

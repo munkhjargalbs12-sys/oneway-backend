@@ -8,6 +8,8 @@ const DEFAULT_RIDE_TIMEZONE = "Asia/Ulaanbaatar";
 const DEFAULT_LEAD_MINUTES = 10;
 const DEFAULT_POLL_MS = 60 * 1000;
 const DEFAULT_STARTUP_DELAY_MS = 5 * 1000;
+const REMINDER_CHANNEL_ID = "ride-reminder";
+const REMINDER_SOUND = "horn.wav";
 
 let schedulerTimer = null;
 let runInFlight = null;
@@ -126,8 +128,12 @@ function buildReminderCandidatesQuery(hasRideIdFilter) {
       NULL::int AS booking_id,
       'driver'::text AS role
     FROM ride_window rw
+    LEFT JOIN ride_presence rp
+      ON rp.ride_id = rw.ride_id
+     AND rp.user_id = rw.driver_id
     WHERE rw.ride_starts_at > NOW()
       AND rw.ride_starts_at <= NOW() + ($3 * INTERVAL '1 minute')
+      AND rp.arrived_at IS NULL
 
     UNION ALL
 
@@ -145,10 +151,14 @@ function buildReminderCandidatesQuery(hasRideIdFilter) {
       'rider'::text AS role
     FROM ride_window rw
     JOIN bookings b ON b.ride_id = rw.ride_id
+    LEFT JOIN ride_presence rp
+      ON rp.ride_id = rw.ride_id
+     AND rp.user_id = b.user_id
     WHERE rw.ride_starts_at > NOW()
       AND rw.ride_starts_at <= NOW() + ($3 * INTERVAL '1 minute')
       AND b.user_id IS NOT NULL
       AND LOWER(COALESCE(b.status, 'pending')) = 'approved'
+      AND rp.arrived_at IS NULL
 
     ORDER BY ride_id ASC, role ASC, booking_id ASC NULLS FIRST
   `;
@@ -208,6 +218,8 @@ async function createReminderNotification(candidate) {
     rideId,
     bookingId: Number.isFinite(bookingId) && bookingId > 0 ? bookingId : null,
     role,
+    sound: REMINDER_SOUND,
+    channelId: REMINDER_CHANNEL_ID,
     data: {
       rideId,
       bookingId: Number.isFinite(bookingId) && bookingId > 0 ? bookingId : null,
