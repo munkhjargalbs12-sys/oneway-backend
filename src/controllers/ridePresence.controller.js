@@ -3,10 +3,7 @@ const crypto = require("crypto");
 const { createNotification } = require("../utils/notify");
 const { haversineMeters } = require("../utils/rideSearch");
 
-const START_RADIUS_METERS = 20;
-const DRIVER_RADIUS_METERS = 30;
-const DWELL_SECONDS_REQUIRED = 5 * 60;
-const DRIVER_FRESHNESS_SECONDS = 2 * 60;
+const START_RADIUS_METERS = 10;
 const TRACKING_WINDOW_BEFORE_MINUTES = 30;
 const TRACKING_WINDOW_AFTER_MINUTES = 90;
 const MAX_ALLOWED_ACCURACY_METERS = 80;
@@ -84,19 +81,6 @@ function isWithinTrackingWindow(ride, now = new Date()) {
   return currentTime >= windowOpenAt && currentTime <= windowCloseAt;
 }
 
-function isFreshTimestamp(value, now = new Date(), freshnessSeconds = DRIVER_FRESHNESS_SECONDS) {
-  if (!value) {
-    return false;
-  }
-
-  const timestamp = new Date(value).getTime();
-  if (Number.isNaN(timestamp)) {
-    return false;
-  }
-
-  return now.getTime() - timestamp <= freshnessSeconds * 1000;
-}
-
 function roundDistance(value) {
   if (value === null || typeof value === "undefined" || value === "") {
     return null;
@@ -139,20 +123,8 @@ function buildMeetupPin(ride) {
   return String(numeric).padStart(MEETUP_PIN_LENGTH, "0");
 }
 
-function getEffectiveStartRadiusMeters(accuracyMeters) {
-  if (!Number.isFinite(accuracyMeters)) {
-    return START_RADIUS_METERS;
-  }
-
-  return Math.max(START_RADIUS_METERS, Math.min(Number(accuracyMeters), 35));
-}
-
-function getEffectiveDriverRadiusMeters(accuracyMeters) {
-  if (!Number.isFinite(accuracyMeters)) {
-    return DRIVER_RADIUS_METERS;
-  }
-
-  return Math.max(DRIVER_RADIUS_METERS, Math.min(Number(accuracyMeters), 45));
+function getEffectiveStartRadiusMeters() {
+  return START_RADIUS_METERS;
 }
 
 function buildRideStartedNotificationBody(ride) {
@@ -174,14 +146,62 @@ function buildRideStartedNotificationBody(ride) {
   return "Бүгд уулзах цэг дээрээ ирлээ. OneWay амжилттай эхэллээ.";
 }
 
+function buildMeetupCheckInNotifications({ ride, actor, approvedBookings }) {
+  const rideId = Number(ride.id);
+  const driverId = Number(ride.user_id);
+  const driverName = normalizePersonName(ride.driver_name);
+
+  if (actor.role === "driver") {
+    return approvedBookings.map((booking) => ({
+      userId: Number(booking.user_id),
+      title: "Жолооч уулзах цэг дээр ирлээ",
+      body: "Жолооч уулзах цэг дээр ирлээ. PIN кодоо аваад ирцээ баталгаажуулна уу.",
+      type: "meetup_driver_checked_in",
+      relatedId: rideId,
+      fromUserId: driverId,
+      fromUserName: driverName,
+      fromAvatarId: ride.driver_avatar_id || null,
+      rideId,
+      bookingId: Number(booking.id),
+      role: "rider",
+    }));
+  }
+
+  const riderBooking = approvedBookings.find(
+    (booking) => Number(booking.user_id) === Number(actor.user_id)
+  );
+  const riderName = normalizePersonName(riderBooking?.name, "Зорчигч");
+
+  return [
+    {
+      userId: driverId,
+      title: "Зорчигч уулзах цэг дээр ирлээ",
+      body: `${riderName} уулзах цэг дээр ирлээ. PIN баталгаажуулалт хүлээж байна.`,
+      type: "meetup_rider_checked_in",
+      relatedId: rideId,
+      fromUserId: Number(actor.user_id),
+      fromUserName: riderName,
+      fromAvatarId: riderBooking?.avatar_id || null,
+      rideId,
+      bookingId: Number(actor.booking_id) || null,
+      role: "driver",
+    },
+  ];
+}
+
 function buildPresenceSummary({ ride, approvedBookings, presenceByUserId }) {
   const driverPresence = presenceByUserId.get(Number(ride.user_id)) || null;
   const driverArrived = Boolean(driverPresence?.arrived_at);
   const approvedPassengerCount = approvedBookings.length;
 
+  const locationVerifiedPassengerCount = approvedBookings.filter((booking) => {
+    const row = presenceByUserId.get(Number(booking.user_id));
+    return Boolean(row?.arrived_at);
+  }).length;
+
   const arrivedPassengerCount = approvedBookings.filter((booking) => {
     const row = presenceByUserId.get(Number(booking.user_id));
-    return Boolean(row?.arrived_at) || normalizeStatus(booking.attendance_status) === "arrived";
+    return Boolean(row?.pin_confirmed_at) || normalizeStatus(booking.attendance_status) === "arrived";
   }).length;
 
   const everyoneArrived =
@@ -192,6 +212,8 @@ function buildPresenceSummary({ ride, approvedBookings, presenceByUserId }) {
   return {
     driver_arrived: driverArrived,
     approved_passenger_count: approvedPassengerCount,
+    location_verified_passenger_count: locationVerifiedPassengerCount,
+    confirmed_passenger_count: arrivedPassengerCount,
     arrived_passenger_count: arrivedPassengerCount,
     ready_to_start: everyoneArrived,
   };
@@ -515,17 +537,23 @@ async function buildPresenceResponse(client, ride, actor) {
     presenceByUserId,
   });
   const driverPresence = presenceByUserId.get(Number(ride.user_id)) || null;
+  const driverLocationVerified = Boolean(driverPresence?.arrived_at);
+  const actorPresence = presenceByUserId.get(Number(actor?.user_id)) || null;
 
   return {
     ride_id: Number(ride.id),
     ride_status: String(ride.status || ""),
     actor_role: normalizeRole(actor?.role),
+    actor_location_verified: Boolean(actorPresence?.arrived_at),
+    actor_pin_confirmed: Boolean(actorPresence?.pin_confirmed_at),
+    driver_location_verified: driverLocationVerified,
     pin_confirmation_enabled: true,
     meetup_pin_length: MEETUP_PIN_LENGTH,
-    meetup_code: normalizeRole(actor?.role) === "driver" ? buildMeetupPin(ride) : null,
+    meetup_code:
+      normalizeRole(actor?.role) === "driver" && driverLocationVerified
+        ? buildMeetupPin(ride)
+        : null,
     required_start_radius_meters: START_RADIUS_METERS,
-    required_driver_radius_meters: DRIVER_RADIUS_METERS,
-    required_dwell_seconds: DWELL_SECONDS_REQUIRED,
     summary,
     participants: [
       {
@@ -535,13 +563,13 @@ async function buildPresenceResponse(client, ride, actor) {
         name: normalizePersonName(ride.driver_name),
         avatar_id: ride.driver_avatar_id || null,
         attendance_status: summary.driver_arrived ? "arrived" : "unknown",
-        arrived: Boolean(driverPresence?.arrived_at),
+        location_verified: driverLocationVerified,
+        location_verified_at: driverPresence?.arrived_at || null,
+        arrived: driverLocationVerified,
         arrived_at: driverPresence?.arrived_at || null,
-        pin_confirmed: Boolean(driverPresence?.pin_confirmed_at),
-        pin_confirmed_at: driverPresence?.pin_confirmed_at || null,
-        pin_confirmed_by: driverPresence?.pin_confirmed_by
-          ? Number(driverPresence.pin_confirmed_by)
-          : null,
+        pin_confirmed: false,
+        pin_confirmed_at: null,
+        pin_confirmed_by: null,
         last_seen_at: driverPresence?.last_seen_at || null,
         distance_to_start_meters: roundDistance(driverPresence?.distance_to_start_meters),
         distance_to_driver_meters: null,
@@ -549,6 +577,9 @@ async function buildPresenceResponse(client, ride, actor) {
       },
       ...approvedBookings.rows.map((booking) => {
         const row = presenceByUserId.get(Number(booking.user_id)) || null;
+        const locationVerified = Boolean(row?.arrived_at);
+        const pinConfirmed = Boolean(row?.pin_confirmed_at);
+        const attendanceArrived = normalizeStatus(booking.attendance_status) === "arrived";
         return {
           user_id: Number(booking.user_id),
           role: "rider",
@@ -556,9 +587,11 @@ async function buildPresenceResponse(client, ride, actor) {
           name: normalizePersonName(booking.name, "Зорчигч"),
           avatar_id: booking.avatar_id || null,
           attendance_status: String(booking.attendance_status || "unknown"),
-          arrived: Boolean(row?.arrived_at) || normalizeStatus(booking.attendance_status) === "arrived",
+          location_verified: locationVerified,
+          location_verified_at: row?.arrived_at || null,
+          arrived: pinConfirmed || attendanceArrived,
           arrived_at: row?.arrived_at || null,
-          pin_confirmed: Boolean(row?.pin_confirmed_at),
+          pin_confirmed: pinConfirmed,
           pin_confirmed_at: row?.pin_confirmed_at || null,
           pin_confirmed_by: row?.pin_confirmed_by ? Number(row.pin_confirmed_by) : null,
           last_seen_at: row?.last_seen_at || null,
@@ -577,6 +610,10 @@ exports.syncRideMeetupPresence = async (req, res) => {
   const latitude = toNumber(req.body?.latitude ?? req.body?.lat);
   const longitude = toNumber(req.body?.longitude ?? req.body?.lng);
   const accuracyMeters = toNumber(req.body?.accuracy);
+  const checkInRequested =
+    req.body?.check_in === true ||
+    req.body?.checkIn === true ||
+    String(req.body?.action || "").trim().toLowerCase() === "check_in";
 
   if (!Number.isFinite(rideId) || rideId <= 0) {
     return res.status(400).json({ error: "Invalid ride id" });
@@ -611,8 +648,6 @@ exports.syncRideMeetupPresence = async (req, res) => {
 
     const now = new Date();
     const currentPresence = presenceByUserId.get(userId) || null;
-    const driverPresence = presenceByUserId.get(Number(ride.user_id)) || null;
-
     const distanceToStart = haversineMeters(
       { lat: latitude, lng: longitude },
       { lat: ride.start_lat, lng: ride.start_lng }
@@ -620,65 +655,30 @@ exports.syncRideMeetupPresence = async (req, res) => {
 
     const withinStartRadius =
       Number.isFinite(distanceToStart) &&
-      distanceToStart <= getEffectiveStartRadiusMeters(accuracyMeters);
-
-    const canUseDriverFallback =
-      actor.role !== "driver" &&
-      driverPresence &&
-      Number.isFinite(Number(driverPresence.latitude)) &&
-      Number.isFinite(Number(driverPresence.longitude)) &&
-      isFreshTimestamp(driverPresence.last_seen_at, now);
-
-    const distanceToDriver = canUseDriverFallback
-      ? haversineMeters(
-          { lat: latitude, lng: longitude },
-          {
-            lat: Number(driverPresence.latitude),
-            lng: Number(driverPresence.longitude),
-          }
-        )
-      : Number.POSITIVE_INFINITY;
-
-    const withinDriverRadius =
-      canUseDriverFallback &&
-      Number.isFinite(distanceToDriver) &&
-      distanceToDriver <= getEffectiveDriverRadiusMeters(accuracyMeters);
-
-    const matchedMeetupPoint = withinStartRadius || withinDriverRadius;
-    const previousMatch =
-      Boolean(currentPresence?.within_start_radius) ||
-      Boolean(currentPresence?.within_driver_radius);
-    const previousSampleFresh = isFreshTimestamp(currentPresence?.last_seen_at, now, 3 * 60);
+      distanceToStart <= getEffectiveStartRadiusMeters();
 
     let dwellStartedAt = currentPresence?.dwell_started_at || null;
     let arrivedAt = currentPresence?.arrived_at || null;
 
-    if (matchedMeetupPoint) {
-      if (!arrivedAt) {
-        if (!(previousMatch && dwellStartedAt && previousSampleFresh)) {
-          dwellStartedAt = now.toISOString();
-        }
-
-        if (dwellStartedAt) {
-          const dwellSeconds = Math.max(
-            0,
-            (now.getTime() - new Date(dwellStartedAt).getTime()) / 1000
-          );
-
-          if (dwellSeconds >= DWELL_SECONDS_REQUIRED) {
-            arrivedAt = now.toISOString();
-          }
-        }
+    if (checkInRequested) {
+      if (!withinStartRadius) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          error: `Уулзах цэгээс ${START_RADIUS_METERS}м дотор байж ирснээ баталгаажуулна уу.`,
+          distance_to_start_meters: roundDistance(distanceToStart),
+          required_start_radius_meters: START_RADIUS_METERS,
+        });
       }
-    } else if (!arrivedAt) {
-      dwellStartedAt = null;
+
+      if (!arrivedAt) {
+        arrivedAt = now.toISOString();
+      }
+      dwellStartedAt = dwellStartedAt || arrivedAt;
     }
 
-    const source = withinStartRadius
-      ? "start_point"
-      : withinDriverRadius
-        ? "driver_fallback"
-        : "none";
+    const source = checkInRequested
+      ? "manual_location_check"
+      : "none";
 
     const upsertedPresence = await upsertPresenceRow(client, {
       ride_id: rideId,
@@ -689,9 +689,9 @@ exports.syncRideMeetupPresence = async (req, res) => {
       longitude,
       accuracy_meters: accuracyMeters,
       distance_to_start_meters: Number.isFinite(distanceToStart) ? distanceToStart : null,
-      distance_to_driver_meters: Number.isFinite(distanceToDriver) ? distanceToDriver : null,
+      distance_to_driver_meters: null,
       within_start_radius: Boolean(withinStartRadius),
-      within_driver_radius: Boolean(withinDriverRadius),
+      within_driver_radius: false,
       source,
       dwell_started_at: dwellStartedAt,
       arrived_at: arrivedAt,
@@ -699,9 +699,12 @@ exports.syncRideMeetupPresence = async (req, res) => {
 
     presenceByUserId.set(userId, upsertedPresence);
 
-    const justArrived = !currentPresence?.arrived_at && Boolean(upsertedPresence.arrived_at);
-    if (actor.role === "rider" && justArrived) {
-      await markPassengerArrived(client, actor.booking_id, userId);
+    const justLocationVerified =
+      !currentPresence?.arrived_at && Boolean(upsertedPresence.arrived_at);
+    if (justLocationVerified) {
+      pendingNotifications.push(
+        ...buildMeetupCheckInNotifications({ ride, actor, approvedBookings })
+      );
     }
 
     const summary = buildPresenceSummary({
@@ -732,7 +735,7 @@ exports.syncRideMeetupPresence = async (req, res) => {
         const title = "OneWay амжилттай эхэллээ";
         const body = buildRideStartedNotificationBody(ride);
 
-        pendingNotifications = [
+        pendingNotifications.push(
           {
             userId: Number(ride.user_id),
             title,
@@ -757,10 +760,16 @@ exports.syncRideMeetupPresence = async (req, res) => {
             rideId: Number(ride.id),
             bookingId: Number(booking.id),
             role: "rider",
-          })),
-        ];
+          }))
+        );
       }
     }
+
+    const presenceResponse = await buildPresenceResponse(
+      client,
+      { ...ride, status: rideStarted ? "started" : ride.status },
+      actor
+    );
 
     await client.query("COMMIT");
 
@@ -769,33 +778,25 @@ exports.syncRideMeetupPresence = async (req, res) => {
     );
 
     return res.json({
+      ...presenceResponse,
       success: true,
       ride_id: rideId,
       ride_status: rideStarted ? "started" : String(ride.status || ""),
       actor_role: actor.role,
       tracking: {
         source,
+        check_in: Boolean(checkInRequested),
         within_start_radius: Boolean(withinStartRadius),
-        within_driver_radius: Boolean(withinDriverRadius),
         distance_to_start_meters: roundDistance(distanceToStart),
-        distance_to_driver_meters: roundDistance(distanceToDriver),
+        location_verified: Boolean(upsertedPresence.arrived_at),
+        location_verified_at: upsertedPresence.arrived_at || null,
         arrived: Boolean(upsertedPresence.arrived_at),
         arrived_at: upsertedPresence.arrived_at || null,
-        dwell_started_at: upsertedPresence.dwell_started_at || null,
-        dwell_seconds: upsertedPresence.dwell_started_at
-          ? Math.max(
-              0,
-              Math.floor(
-                (now.getTime() - new Date(upsertedPresence.dwell_started_at).getTime()) / 1000
-              )
-            )
-          : 0,
+        pin_confirmed: Boolean(upsertedPresence.pin_confirmed_at),
       },
-      summary,
+      summary: presenceResponse.summary || summary,
       ride_started: rideStarted,
       required_start_radius_meters: START_RADIUS_METERS,
-      required_driver_radius_meters: DRIVER_RADIUS_METERS,
-      required_dwell_seconds: DWELL_SECONDS_REQUIRED,
     });
   } catch (err) {
     await client.query("ROLLBACK");
@@ -850,6 +851,20 @@ exports.confirmRideMeetupPin = async (req, res) => {
     const currentPresence = presenceByUserId.get(userId) || null;
     const currentDriverPresence = presenceByUserId.get(Number(ride.user_id)) || null;
 
+    if (!currentDriverPresence?.arrived_at) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        error: "Жолооч уулзах цэг дээр ирснээ баталгаажуулсны дараа PIN ашиглана.",
+      });
+    }
+
+    if (!currentPresence?.arrived_at) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        error: "Эхлээд уулзах цэг дээр ирснээ location-аар баталгаажуулна уу.",
+      });
+    }
+
     const riderPresence = await upsertPresenceRow(client, {
       ride_id: rideId,
       user_id: userId,
@@ -862,38 +877,15 @@ exports.confirmRideMeetupPin = async (req, res) => {
       distance_to_driver_meters: currentPresence?.distance_to_driver_meters ?? null,
       within_start_radius: Boolean(currentPresence?.within_start_radius),
       within_driver_radius: Boolean(currentPresence?.within_driver_radius),
-      source: "meetup_pin",
-      dwell_started_at: currentPresence?.dwell_started_at || nowIso,
-      arrived_at: currentPresence?.arrived_at || nowIso,
+      source: currentPresence?.source || "manual_location_check",
+      dwell_started_at: currentPresence?.dwell_started_at || currentPresence?.arrived_at || nowIso,
+      arrived_at: currentPresence.arrived_at,
       pin_confirmed_at: currentPresence?.pin_confirmed_at || nowIso,
       pin_confirmed_by: userId,
     });
 
     await markPassengerArrived(client, actor.booking_id, userId);
     presenceByUserId.set(userId, riderPresence);
-
-    const driverPresence = await upsertPresenceRow(client, {
-      ride_id: rideId,
-      user_id: Number(ride.user_id),
-      booking_id: null,
-      role: "driver",
-      latitude: currentDriverPresence?.latitude ?? null,
-      longitude: currentDriverPresence?.longitude ?? null,
-      accuracy_meters: currentDriverPresence?.accuracy_meters ?? null,
-      distance_to_start_meters: currentDriverPresence?.distance_to_start_meters ?? null,
-      distance_to_driver_meters: null,
-      within_start_radius: Boolean(currentDriverPresence?.within_start_radius),
-      within_driver_radius: false,
-      source: currentDriverPresence?.source && currentDriverPresence.source !== "none"
-        ? currentDriverPresence.source
-        : "meetup_pin",
-      dwell_started_at: currentDriverPresence?.dwell_started_at || nowIso,
-      arrived_at: currentDriverPresence?.arrived_at || nowIso,
-      pin_confirmed_at: currentDriverPresence?.pin_confirmed_at || nowIso,
-      pin_confirmed_by: userId,
-    });
-
-    presenceByUserId.set(Number(ride.user_id), driverPresence);
 
     const summary = buildPresenceSummary({
       ride,
