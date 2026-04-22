@@ -55,9 +55,13 @@ CREATE TABLE IF NOT EXISTS rides (
   start_lat NUMERIC(9,6),
   start_lng NUMERIC(9,6),
   start_location TEXT,
+  start_address TEXT,
+  start_place_name TEXT,
   end_lat NUMERIC(9,6),
   end_lng NUMERIC(9,6),
   end_location TEXT,
+  end_address TEXT,
+  end_place_name TEXT,
   polyline TEXT,
   price INT,
   seats_total INT,
@@ -219,6 +223,10 @@ ALTER TABLE bookings ADD COLUMN IF NOT EXISTS attendance_marked_by INT REFERENCE
 
 ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS vehicle_verified BOOLEAN DEFAULT FALSE;
 ALTER TABLE rides ADD COLUMN IF NOT EXISTS start_location TEXT;
+ALTER TABLE rides ADD COLUMN IF NOT EXISTS start_address TEXT;
+ALTER TABLE rides ADD COLUMN IF NOT EXISTS start_place_name TEXT;
+ALTER TABLE rides ADD COLUMN IF NOT EXISTS end_address TEXT;
+ALTER TABLE rides ADD COLUMN IF NOT EXISTS end_place_name TEXT;
 
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS from_user_id INT REFERENCES users(id) ON DELETE SET NULL;
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS from_user_name TEXT;

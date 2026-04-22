@@ -204,7 +204,11 @@ exports.createRide = async (req, res) => {
       start,
       end,
       start_location,
+      start_address,
+      start_place_name,
       end_location,
+      end_address,
+      end_place_name,
       polyline,
       price,
       seats,
@@ -216,6 +220,19 @@ exports.createRide = async (req, res) => {
 
     if (!start || !end || !seats || !ride_date || !start_time || !vehicle_id) {
       return res.status(400).json({ error: "Missing required fields" });
+    }
+
+    const normalizedStartPlaceName = sanitizeText(start_place_name) || sanitizeText(start_location);
+    const normalizedEndPlaceName = sanitizeText(end_place_name) || sanitizeText(end_location);
+    const normalizedStartAddress = sanitizeText(start_address);
+    const normalizedEndAddress = sanitizeText(end_address);
+
+    if (!normalizedStartPlaceName) {
+      return res.status(400).json({ error: "Эхлэх цэгийн нэршлээ оруулна уу" });
+    }
+
+    if (!normalizedEndPlaceName) {
+      return res.status(400).json({ error: "Очих газрын нэршлээ оруулна уу" });
     }
 
     const rideStartValidationError = getRideStartValidationError(ride_date, start_time);
@@ -233,20 +250,24 @@ exports.createRide = async (req, res) => {
 
     const result = await pool.query(
       `INSERT INTO rides
-       (user_id, vehicle_id, start_lat, start_lng, start_location, end_lat, end_lng,
-        end_location, polyline, price, seats_total, seats_taken,
+       (user_id, vehicle_id, start_lat, start_lng, start_location, start_address, start_place_name, end_lat, end_lng,
+        end_location, end_address, end_place_name, polyline, price, seats_total, seats_taken,
         ride_date, start_time, days, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,0,$12,$13,$14,'active')
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,0,$16,$17,$18,'active')
        RETURNING *, to_char(ride_date, 'YYYY-MM-DD') AS ride_date`,
       [
         userId,
         vehicle_id,
         start.lat,
         start.lng,
-        sanitizeText(start_location),
+        normalizedStartPlaceName,
+        normalizedStartAddress,
+        normalizedStartPlaceName,
         end.lat,
         end.lng,
-        end_location,
+        normalizedEndPlaceName,
+        normalizedEndAddress,
+        normalizedEndPlaceName,
         polyline,
         price,
         seats,
@@ -281,9 +302,13 @@ exports.getRides = async (req, res) => {
          r.start_lat,
          r.start_lng,
          r.start_location,
+         r.start_address,
+         r.start_place_name,
          r.end_lat,
          r.end_lng,
          r.end_location,
+         r.end_address,
+         r.end_place_name,
          r.price,
          (r.seats_total - r.seats_taken) AS available_seats,
          v.brand,
@@ -340,9 +365,13 @@ exports.searchRides = async (req, res) => {
          r.start_lat,
          r.start_lng,
          r.start_location,
+         r.start_address,
+         r.start_place_name,
          r.end_lat,
          r.end_lng,
          r.end_location,
+         r.end_address,
+         r.end_place_name,
          r.polyline,
          r.price,
          (r.seats_total - r.seats_taken) AS available_seats,
@@ -493,7 +522,11 @@ exports.getActiveRide = async (req, res) => {
     const result = await pool.query(
       `SELECT r.id,
               r.start_location,
+              r.start_address,
+              r.start_place_name,
               r.end_location,
+              r.end_address,
+              r.end_place_name,
               ${rideDateSelect("r")},
               r.start_time,
               v.brand,
