@@ -12,6 +12,7 @@ const {
 
 const DEFAULT_RIDE_TIMEZONE = "Asia/Ulaanbaatar";
 const MIN_RIDE_START_LEAD_MINUTES = 5;
+const COMPLETE_RADIUS_METERS = 200;
 
 function getRideTimezone() {
   const value = String(process.env.RIDE_TIMEZONE || "").trim();
@@ -755,21 +756,77 @@ exports.startRide = async (req, res) => {
 exports.completeRide = async (req, res) => {
   const userId = req.user.id;
   const { id } = req.params;
+  const latitude = Number(req.body?.latitude);
+  const longitude = Number(req.body?.longitude);
+  const client = await pool.connect();
 
   try {
-    const result = await pool.query(
+    const rideResult = await client.query(
+      `SELECT id, user_id, status, end_lat, end_lng
+         FROM rides
+        WHERE id = $1 AND user_id = $2
+        LIMIT 1`,
+      [id, userId]
+    );
+
+    if (rideResult.rowCount === 0) {
+      return res.status(404).json({ error: "Ride not found or not owner" });
+    }
+
+    const ride = rideResult.rows[0];
+    const normalizedStatus = String(ride.status || "").toLowerCase();
+
+    if (normalizedStatus === "completed") {
+      return res.json({ success: true, status: "completed" });
+    }
+
+    if (normalizedStatus !== "started") {
+      return res.status(400).json({ error: "Ride must be started before completion" });
+    }
+
+    let distanceToEndMeters = null;
+    const hasLiveLocation = Number.isFinite(latitude) && Number.isFinite(longitude);
+    const hasDestination =
+      Number.isFinite(Number(ride.end_lat)) && Number.isFinite(Number(ride.end_lng));
+
+    if (hasLiveLocation && hasDestination) {
+      distanceToEndMeters = haversineMeters(
+        { lat: latitude, lng: longitude },
+        { lat: Number(ride.end_lat), lng: Number(ride.end_lng) }
+      );
+
+      if (
+        !Number.isFinite(distanceToEndMeters) ||
+        distanceToEndMeters > COMPLETE_RADIUS_METERS
+      ) {
+        return res.status(400).json({
+          error: `Очих цэгээс ${COMPLETE_RADIUS_METERS}м дотор орж байж аяллаа дуусгана уу.`,
+          distance_to_end_meters: Number.isFinite(distanceToEndMeters)
+            ? Math.round(distanceToEndMeters)
+            : null,
+          required_end_radius_meters: COMPLETE_RADIUS_METERS,
+        });
+      }
+    }
+
+    const result = await client.query(
       "UPDATE rides SET status='completed' WHERE id=$1 AND user_id=$2 RETURNING *",
       [id, userId]
     );
 
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: "Ride not found or not owner" });
-    }
-
-    res.json({ success: true });
+    res.json({
+      success: true,
+      status: "completed",
+      distance_to_end_meters: Number.isFinite(distanceToEndMeters)
+        ? Math.round(distanceToEndMeters)
+        : null,
+      required_end_radius_meters: COMPLETE_RADIUS_METERS,
+    });
   } catch (err) {
     console.error("completeRide error:", err);
     res.status(500).json({ error: "Failed to complete ride" });
+  } finally {
+    client.release();
   }
 };
 
