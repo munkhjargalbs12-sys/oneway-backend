@@ -3,6 +3,12 @@ const { sendPushToUser } = require("./push");
 
 const RIDE_LEVEL_DEDUPED_TYPES = new Set(["ride_reminder", "ride_started_auto"]);
 
+async function ensureNotificationHiddenColumn() {
+  await pool.query(
+    "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS hidden_at TIMESTAMP"
+  );
+}
+
 async function findDuplicateNotification(existingColumns, payload) {
   const normalizedType = String(payload?.type || "").trim().toLowerCase();
   const userId = Number(payload?.userId);
@@ -111,6 +117,8 @@ exports.createNotification = async (payload) => {
       bookingId = null,
       role = null,
       data = null,
+      sound = "default",
+      channelId = "default",
     } = payload || {};
 
     const baseValues = {
@@ -177,7 +185,8 @@ exports.createNotification = async (payload) => {
           screen: "/notifications",
           ...(data && typeof data === "object" ? data : {}),
         },
-        sound: "default",
+        sound,
+        channelId,
       }).catch((pushErr) => {
         console.error("push send error:", pushErr.message || pushErr);
       });
@@ -186,5 +195,45 @@ exports.createNotification = async (payload) => {
     return inserted;
   } catch (err) {
     console.error("notify error:", err);
+  }
+};
+
+exports.hideRideReminderNotifications = async ({ rideId, userIds = [] } = {}) => {
+  try {
+    const normalizedRideId = Number(rideId);
+    if (!Number.isFinite(normalizedRideId) || normalizedRideId <= 0) {
+      return { hiddenCount: 0 };
+    }
+
+    const normalizedUserIds = Array.from(
+      new Set(
+        (Array.isArray(userIds) ? userIds : [])
+          .map((value) => Number(value))
+          .filter((value) => Number.isFinite(value) && value > 0)
+      )
+    );
+
+    await ensureNotificationHiddenColumn();
+
+    const params = [normalizedRideId, "ride_reminder"];
+    const userFilter =
+      normalizedUserIds.length > 0
+        ? `AND user_id = ANY($${params.push(normalizedUserIds)}::int[])`
+        : "";
+
+    const result = await pool.query(
+      `UPDATE notifications
+          SET hidden_at = COALESCE(hidden_at, NOW())
+        WHERE ride_id = $1
+          AND LOWER(COALESCE(type, '')) = $2
+          AND hidden_at IS NULL
+          ${userFilter}`,
+      params
+    );
+
+    return { hiddenCount: result.rowCount };
+  } catch (err) {
+    console.error("hide ride reminder notifications error:", err);
+    return { hiddenCount: 0 };
   }
 };

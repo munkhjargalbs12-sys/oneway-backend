@@ -1,5 +1,8 @@
 const pool = require("../db");
-const { createNotification } = require("../utils/notify");
+const {
+  createNotification,
+  hideRideReminderNotifications,
+} = require("../utils/notify");
 const { sendRideReminderNotifications } = require("../services/rideReminderScheduler");
 const {
   getDestinationDistanceMeters,
@@ -61,6 +64,61 @@ async function ensureRideHistoryHidesTable(client) {
 function sanitizeText(value) {
   const normalized = String(value || "").trim();
   return normalized || null;
+}
+
+function buildRideStartedNotificationBody(ride) {
+  const startLocation = sanitizeText(ride?.start_location);
+  const endLocation = sanitizeText(ride?.end_location);
+
+  if (startLocation && endLocation) {
+    return `${startLocation} цэг дээр баг бүрдлээ. ${endLocation} чиглэлийн OneWay амжилттай эхэллээ.`;
+  }
+
+  if (startLocation) {
+    return `${startLocation} цэг дээр баг бүрдлээ. OneWay амжилттай эхэллээ.`;
+  }
+
+  if (endLocation) {
+    return `${endLocation} чиглэлийн OneWay амжилттай эхэллээ.`;
+  }
+
+  return "Бүгд уулзах цэг дээрээ ирлээ. OneWay амжилттай эхэллээ.";
+}
+
+function buildRideStartedNotifications(ride, approvedBookings = []) {
+  const rideId = Number(ride?.id);
+  const driverId = Number(ride?.user_id);
+  const driverName = sanitizeText(ride?.driver_name) || "Жолооч";
+  const title = "OneWay аялал амжилттай эхэллээ";
+  const body = buildRideStartedNotificationBody(ride);
+
+  return [
+    {
+      userId: driverId,
+      title,
+      body,
+      type: "ride_started_auto",
+      relatedId: rideId,
+      fromUserId: driverId,
+      fromUserName: driverName,
+      fromAvatarId: ride?.driver_avatar_id || null,
+      rideId,
+      role: "driver",
+    },
+    ...approvedBookings.map((booking) => ({
+      userId: Number(booking.user_id),
+      title,
+      body,
+      type: "ride_started_auto",
+      relatedId: rideId,
+      fromUserId: driverId,
+      fromUserName: driverName,
+      fromAvatarId: ride?.driver_avatar_id || null,
+      rideId,
+      bookingId: Number(booking.id),
+      role: "rider",
+    })),
+  ];
 }
 
 function parseRideStartDate(rideDate, startTime) {
@@ -637,21 +695,60 @@ exports.hideRideHistoryEntry = async (req, res) => {
 exports.startRide = async (req, res) => {
   const userId = req.user.id;
   const { id } = req.params;
+  const client = await pool.connect();
 
   try {
-    const result = await pool.query(
-      "UPDATE rides SET status='started' WHERE id=$1 AND user_id=$2 RETURNING *",
+    await client.query("BEGIN");
+
+    const result = await client.query(
+      `UPDATE rides r
+          SET status = 'started'
+         FROM users u
+        WHERE r.id = $1
+          AND r.user_id = $2
+          AND u.id = r.user_id
+      RETURNING r.*, u.name AS driver_name, u.avatar_id AS driver_avatar_id`,
       [id, userId]
     );
 
     if (result.rowCount === 0) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ error: "Ride not found or not owner" });
     }
 
-    res.json({ success: true });
+    const ride = result.rows[0];
+    const approvedBookings = await client.query(
+      `SELECT id, user_id
+         FROM bookings
+        WHERE ride_id = $1
+          AND LOWER(COALESCE(status, 'pending')) = 'approved'`,
+      [Number(id)]
+    );
+
+    await client.query("COMMIT");
+
+    const reminderCleanupUserIds = [
+      Number(ride.user_id),
+      ...approvedBookings.rows.map((booking) => Number(booking.user_id)),
+    ];
+
+    await Promise.all([
+      ...buildRideStartedNotifications(ride, approvedBookings.rows).map((payload) =>
+        createNotification(payload)
+      ),
+      hideRideReminderNotifications({
+        rideId: Number(id),
+        userIds: reminderCleanupUserIds,
+      }),
+    ]);
+
+    res.json({ success: true, status: "started" });
   } catch (err) {
+    await client.query("ROLLBACK").catch(() => null);
     console.error("startRide error:", err);
     res.status(500).json({ error: "Failed to start ride" });
+  } finally {
+    client.release();
   }
 };
 

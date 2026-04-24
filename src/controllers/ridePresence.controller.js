@@ -1,9 +1,12 @@
 const pool = require("../db");
 const crypto = require("crypto");
-const { createNotification } = require("../utils/notify");
+const {
+  createNotification,
+  hideRideReminderNotifications,
+} = require("../utils/notify");
 const { haversineMeters } = require("../utils/rideSearch");
 
-const START_RADIUS_METERS = 15;
+const START_RADIUS_METERS = 50;
 const TRACKING_WINDOW_BEFORE_MINUTES = 30;
 const TRACKING_WINDOW_AFTER_MINUTES = 90;
 const MAX_ALLOWED_ACCURACY_METERS = 80;
@@ -772,9 +775,17 @@ exports.syncRideMeetupPresence = async (req, res) => {
 
     await client.query("COMMIT");
 
-    await Promise.all(
-      pendingNotifications.map((payload) => createNotification(payload))
-    );
+    const reminderCleanupUserIds = rideStarted
+      ? [Number(ride.user_id), ...approvedBookings.map((booking) => Number(booking.user_id))]
+      : [userId];
+
+    await Promise.all([
+      ...pendingNotifications.map((payload) => createNotification(payload)),
+      hideRideReminderNotifications({
+        rideId,
+        userIds: reminderCleanupUserIds,
+      }),
+    ]);
 
     return res.json({
       ...presenceResponse,
@@ -903,9 +914,17 @@ exports.confirmRideMeetupPin = async (req, res) => {
 
     await client.query("COMMIT");
 
-    await Promise.all(
-      pendingNotifications.map((payload) => createNotification(payload))
-    );
+    const reminderCleanupUserIds = rideStarted
+      ? [Number(ride.user_id), ...approvedBookings.map((booking) => Number(booking.user_id))]
+      : [userId];
+
+    await Promise.all([
+      ...pendingNotifications.map((payload) => createNotification(payload)),
+      hideRideReminderNotifications({
+        rideId,
+        userIds: reminderCleanupUserIds,
+      }),
+    ]);
 
     return res.json({
       ...response,
