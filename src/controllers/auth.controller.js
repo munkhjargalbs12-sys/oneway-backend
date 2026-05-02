@@ -336,7 +336,7 @@ exports.confirmPasswordReset = async (req, res) => {
 
     const { rows } = await client.query(
       `
-      SELECT u.id, u.email, prc.code_hash, prc.expires_at
+      SELECT u.id, u.email, u.password_hash, prc.code_hash, prc.expires_at
         FROM users u
         JOIN password_reset_codes prc ON prc.user_id = u.id
        WHERE u.phone = $1
@@ -368,6 +368,12 @@ exports.confirmPasswordReset = async (req, res) => {
     if (expectedHash !== reset.code_hash) {
       await client.query("ROLLBACK");
       return res.status(400).json({ message: "Invalid or expired reset code" });
+    }
+
+    const sameAsCurrent = await bcrypt.compare(password, reset.password_hash);
+    if (sameAsCurrent) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: "New password must be different from your current password" });
     }
 
     const hash = await bcrypt.hash(password, 12);
