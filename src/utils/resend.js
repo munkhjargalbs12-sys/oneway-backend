@@ -80,7 +80,31 @@ async function sendVerificationCodeEmail({ to, code, expiresInMinutes }) {
   return sendEmailWithResend({ to, subject, html, text });
 }
 
+async function sendPasswordResetCodeEmail({ to, code, expiresInMinutes }) {
+  const safeCode = escapeHtml(code);
+  const subject = "OneWay password reset code";
+  const text = [
+    "OneWay password reset",
+    "",
+    `Your password reset code is: ${code}`,
+    `This code expires in ${expiresInMinutes} minutes.`,
+    "If you did not request this, you can ignore this email.",
+  ].join("\n");
+  const html = [
+    "<div style=\"font-family: Arial, sans-serif; color: #1f2937; line-height: 1.6;\">",
+    "<h2 style=\"margin-bottom: 12px;\">OneWay password reset</h2>",
+    "<p style=\"margin: 0 0 12px;\">Use this code to reset your password.</p>",
+    `<div style="display: inline-block; padding: 12px 18px; border-radius: 12px; background: #eff6ff; border: 1px solid #bfdbfe; font-size: 28px; font-weight: 700; letter-spacing: 6px;">${safeCode}</div>`,
+    `<p style="margin: 12px 0 0;">This code expires in ${Number(expiresInMinutes)} minutes.</p>`,
+    "<p style=\"margin: 12px 0 0; color: #6b7280;\">If you did not request this, you can ignore this email.</p>",
+    "</div>",
+  ].join("");
+
+  return sendEmailWithResend({ to, subject, html, text });
+}
+
 module.exports = {
   sendEmailWithResend,
   sendVerificationCodeEmail,
+  sendPasswordResetCodeEmail,
 };

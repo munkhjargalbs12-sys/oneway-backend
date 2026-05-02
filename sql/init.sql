@@ -166,6 +166,16 @@ CREATE TABLE IF NOT EXISTS email_verification_codes (
   created_at TIMESTAMP DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS password_reset_codes (
+  id SERIAL PRIMARY KEY,
+  user_id INT REFERENCES users(id) ON DELETE CASCADE,
+  email TEXT NOT NULL,
+  code_hash TEXT NOT NULL,
+  expires_at TIMESTAMP NOT NULL,
+  consumed_at TIMESTAMP,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS admin_users (
   id SERIAL PRIMARY KEY,
   email TEXT UNIQUE NOT NULL,
@@ -267,6 +277,8 @@ END $$;
 
 ALTER TABLE email_verification_codes ADD COLUMN IF NOT EXISTS consumed_at TIMESTAMP;
 
+ALTER TABLE password_reset_codes ADD COLUMN IF NOT EXISTS consumed_at TIMESTAMP;
+
 ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'super_admin';
 ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
 ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP;
@@ -276,6 +288,12 @@ CREATE INDEX IF NOT EXISTS idx_email_verification_codes_user_id
 
 CREATE INDEX IF NOT EXISTS idx_email_verification_codes_expires_at
   ON email_verification_codes(expires_at);
+
+CREATE INDEX IF NOT EXISTS idx_password_reset_codes_user_id
+  ON password_reset_codes(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_password_reset_codes_expires_at
+  ON password_reset_codes(expires_at);
 
 CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_admin_user_id
   ON admin_audit_logs(admin_user_id);

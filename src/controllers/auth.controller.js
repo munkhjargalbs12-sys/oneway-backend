@@ -1,6 +1,10 @@
 const bcrypt = require("bcrypt");
+const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const pool = require("../db");
+const { sendPasswordResetCodeEmail } = require("../utils/resend");
+
+const PASSWORD_RESET_CODE_TTL_MINUTES = 10;
 
 function resolveTrustLevel(user) {
   if (user?.one_way_verified) return 5;
@@ -8,6 +12,33 @@ function resolveTrustLevel(user) {
   if (user?.payment_linked) return 3;
   if (user?.email_verified && user?.phone_verified) return 2;
   return 1;
+}
+
+function normalizeAccountRole(role) {
+  const value = String(role || "").trim().toLowerCase();
+  if (value === "rider") return "passenger";
+  if (value === "driver" || value === "passenger") return value;
+  return null;
+}
+
+function generateResetCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+function maskEmail(value) {
+  const email = String(value || "").trim().toLowerCase();
+  const [name, domain] = email.split("@");
+  if (!name || !domain) return "";
+  const visible = name.length <= 2 ? name[0] : name.slice(0, 2);
+  return `${visible}${"*".repeat(Math.max(2, name.length - visible.length))}@${domain}`;
+}
+
+function hashPasswordResetCode(userId, email, code) {
+  const secret = process.env.JWT_SECRET || process.env.PASSWORD_RESET_SECRET || "oneway-password-reset";
+  return crypto
+    .createHash("sha256")
+    .update(`${userId}:${email}:${code}:${secret}`)
+    .digest("hex");
 }
 
 /**
@@ -26,6 +57,7 @@ exports.register = async (req, res) => {
     avatar,
   } = req.body;
   const resolvedAvatarId = avatar_id || avatar || "guy";
+  const normalizedRole = normalizeAccountRole(role);
 
   if (!phone || !password || !name) {
     return res.status(400).json({ message: "Name, phone and password required" });
@@ -49,7 +81,7 @@ exports.register = async (req, res) => {
     return res.status(400).json({ message: "Password must be at least 6 characters" });
   }
 
-  if (!["passenger", "driver"].includes(role)) {
+  if (!normalizedRole) {
     return res.status(400).json({ message: "Invalid role" });
   }
 
@@ -78,7 +110,7 @@ exports.register = async (req, res) => {
                 payment_linked, driver_verified, one_way_verified,
                 verification_status, verification_submitted_at, verification_approved_at, verification_rejected_at, verification_note
       `,
-      [phone, hash, name, role, resolvedAvatarId]
+      [phone, hash, name, normalizedRole, resolvedAvatarId]
     );
 
     const user = rows[0];
@@ -211,6 +243,158 @@ exports.login = async (req, res) => {
   }
 };
 
+exports.requestPasswordReset = async (req, res) => {
+  const phone = String(req.body?.phone || "").trim();
+
+  if (!phone) {
+    return res.status(400).json({ message: "Phone is required" });
+  }
+
+  if (!/^[0-9]{8}$/.test(phone)) {
+    return res.status(400).json({ message: "Invalid phone number" });
+  }
+
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT id, email, COALESCE(email_verified, FALSE) AS email_verified, COALESCE(is_blocked, FALSE) AS is_blocked
+        FROM users
+       WHERE phone = $1
+       LIMIT 1
+      `,
+      [phone]
+    );
+
+    const user = rows[0];
+    if (!user || user.is_blocked) {
+      return res.json({ success: true });
+    }
+
+    const email = String(user.email || "").trim().toLowerCase();
+    if (!email || !user.email_verified) {
+      return res.status(400).json({ message: "Verified email is required to reset password" });
+    }
+
+    const code = generateResetCode();
+    const expiresAt = new Date(Date.now() + PASSWORD_RESET_CODE_TTL_MINUTES * 60 * 1000);
+    const codeHash = hashPasswordResetCode(user.id, email, code);
+
+    await pool.query("DELETE FROM password_reset_codes WHERE user_id = $1", [user.id]);
+    await pool.query(
+      `
+      INSERT INTO password_reset_codes (user_id, email, code_hash, expires_at)
+      VALUES ($1, $2, $3, $4)
+      `,
+      [user.id, email, codeHash, expiresAt]
+    );
+
+    await sendPasswordResetCodeEmail({
+      to: email,
+      code,
+      expiresInMinutes: PASSWORD_RESET_CODE_TTL_MINUTES,
+    });
+
+    res.json({ success: true, masked_email: maskEmail(email) });
+  } catch (err) {
+    console.error("requestPasswordReset error:", err);
+    res.status(500).json({ message: "Failed to send password reset code" });
+  }
+};
+
+exports.confirmPasswordReset = async (req, res) => {
+  const phone = String(req.body?.phone || "").trim();
+  const code = String(req.body?.code || "").trim();
+  const password = String(req.body?.password || "").trim();
+  const confirmPassword = String(
+    req.body?.confirmPassword || req.body?.confirm_password || req.body?.password_confirmation || ""
+  ).trim();
+
+  if (!phone || !code || !password || !confirmPassword) {
+    return res.status(400).json({ message: "Phone, code and password are required" });
+  }
+
+  if (!/^[0-9]{8}$/.test(phone)) {
+    return res.status(400).json({ message: "Invalid phone number" });
+  }
+
+  if (!/^[0-9]{6}$/.test(code)) {
+    return res.status(400).json({ message: "Invalid reset code" });
+  }
+
+  if (password.length < 6) {
+    return res.status(400).json({ message: "Password must be at least 6 characters" });
+  }
+
+  if (password !== confirmPassword) {
+    return res.status(400).json({ message: "Password and password confirmation do not match" });
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const { rows } = await client.query(
+      `
+      SELECT u.id, u.email, prc.code_hash, prc.expires_at
+        FROM users u
+        JOIN password_reset_codes prc ON prc.user_id = u.id
+       WHERE u.phone = $1
+         AND LOWER(prc.email) = LOWER(COALESCE(u.email, ''))
+         AND COALESCE(u.email_verified, FALSE) = TRUE
+         AND prc.consumed_at IS NULL
+       ORDER BY prc.created_at DESC
+       LIMIT 1
+      `,
+      [phone]
+    );
+
+    const reset = rows[0];
+    if (!reset) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: "Invalid or expired reset code" });
+    }
+
+    if (new Date(reset.expires_at).getTime() < Date.now()) {
+      await client.query(
+        "DELETE FROM password_reset_codes WHERE user_id = $1",
+        [reset.id]
+      );
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: "Invalid or expired reset code" });
+    }
+
+    const expectedHash = hashPasswordResetCode(reset.id, String(reset.email || "").trim().toLowerCase(), code);
+    if (expectedHash !== reset.code_hash) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: "Invalid or expired reset code" });
+    }
+
+    const hash = await bcrypt.hash(password, 12);
+    await client.query(
+      "UPDATE users SET password_hash = $1 WHERE id = $2",
+      [hash, reset.id]
+    );
+    await client.query(
+      "UPDATE password_reset_codes SET consumed_at = NOW() WHERE user_id = $1 AND consumed_at IS NULL",
+      [reset.id]
+    );
+
+    await client.query("COMMIT");
+    res.json({ success: true });
+  } catch (err) {
+    console.error("confirmPasswordReset error:", err);
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      console.error("confirmPasswordReset rollback error:", rollbackError);
+    }
+    res.status(500).json({ message: "Failed to reset password" });
+  } finally {
+    client.release();
+  }
+};
+
 /**
  * Set role
  */
@@ -218,17 +402,18 @@ exports.setRole = async (req, res) => {
   try {
     const userId = req.user.id;
     const { role } = req.body;
+    const normalizedRole = normalizeAccountRole(role);
 
-    if (!["driver", "passenger"].includes(role)) {
+    if (!normalizedRole) {
       return res.status(400).json({ message: "Invalid role" });
     }
 
     await pool.query(
       "UPDATE users SET role = $1 WHERE id = $2",
-      [role, userId]
+      [normalizedRole, userId]
     );
 
-    res.json({ success: true, role });
+    res.json({ success: true, role: normalizedRole });
   } catch (err) {
     console.error("setRole error:", err);
     res.status(500).json({ message: "Failed to set role" });
