@@ -196,6 +196,10 @@ function buildPresenceSummary({ ride, approvedBookings, presenceByUserId }) {
   const driverPresence = presenceByUserId.get(Number(ride.user_id)) || null;
   const driverArrived = Boolean(driverPresence?.arrived_at);
   const approvedPassengerCount = approvedBookings.length;
+  const approvedSeatCount = approvedBookings.reduce(
+    (sum, booking) => sum + Math.max(1, Number(booking?.seats || 1)),
+    0
+  );
 
   const locationVerifiedPassengerCount = approvedBookings.filter((booking) => {
     const row = presenceByUserId.get(Number(booking.user_id));
@@ -206,17 +210,41 @@ function buildPresenceSummary({ ride, approvedBookings, presenceByUserId }) {
     const row = presenceByUserId.get(Number(booking.user_id));
     return Boolean(row?.pin_confirmed_at);
   }).length;
+  const noShowPassengerCount = approvedBookings.filter(
+    (booking) => normalizeStatus(booking?.attendance_status) === "no_show"
+  ).length;
 
+  const confirmedSeatCount = approvedBookings.reduce((sum, booking) => {
+    const row = presenceByUserId.get(Number(booking.user_id));
+    return Boolean(row?.pin_confirmed_at)
+      ? sum + Math.max(1, Number(booking?.seats || 1))
+      : sum;
+  }, 0);
+  const noShowSeatCount = approvedBookings.reduce(
+    (sum, booking) =>
+      normalizeStatus(booking?.attendance_status) === "no_show"
+        ? sum + Math.max(1, Number(booking?.seats || 1))
+        : sum,
+    0
+  );
+
+  const allApprovedSeatsResolved =
+    approvedSeatCount > 0 && confirmedSeatCount + noShowSeatCount >= approvedSeatCount;
   const everyoneArrived =
     driverArrived &&
-    approvedPassengerCount > 0 &&
-    confirmedPassengerCount === approvedPassengerCount;
+    confirmedSeatCount > 0 &&
+    allApprovedSeatsResolved;
 
   return {
     driver_arrived: driverArrived,
     approved_passenger_count: approvedPassengerCount,
+    approved_seat_count: approvedSeatCount,
     location_verified_passenger_count: locationVerifiedPassengerCount,
     confirmed_passenger_count: confirmedPassengerCount,
+    no_show_passenger_count: noShowPassengerCount,
+    confirmed_seat_count: confirmedSeatCount,
+    no_show_seat_count: noShowSeatCount,
+    all_approved_seats_resolved: allApprovedSeatsResolved,
     arrived_passenger_count: confirmedPassengerCount,
     ready_to_start: everyoneArrived,
   };
@@ -231,6 +259,8 @@ async function loadRideAccess(client, rideId, userId) {
             r.start_lng,
             r.start_location,
             r.end_location,
+            r.seats_total,
+            r.seats_taken,
             to_char(r.ride_date, 'YYYY-MM-DD') AS ride_date,
             r.start_time,
             r.created_at,
@@ -324,9 +354,24 @@ async function loadRideAccess(client, rideId, userId) {
 }
 
 async function getApprovedBookings(client, rideId) {
+  const seatColumnRes = await client.query(
+    `SELECT column_name
+       FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'bookings'
+        AND column_name IN ('seats', 'seats_booked')`
+  );
+  const seatColumns = new Set(seatColumnRes.rows.map((row) => row.column_name));
+  const seatExpr = seatColumns.has("seats")
+    ? "COALESCE(b.seats, 1)"
+    : seatColumns.has("seats_booked")
+      ? "COALESCE(b.seats_booked, 1)"
+      : "1";
+
   const result = await client.query(
     `SELECT b.id,
             b.user_id,
+            ${seatExpr} AS seats,
             COALESCE(b.attendance_status, 'unknown') AS attendance_status,
             u.name,
             u.avatar_id
@@ -343,6 +388,7 @@ async function getApprovedBookings(client, rideId) {
     ...row,
     id: Number(row.id),
     user_id: Number(row.user_id),
+    seats: Math.max(1, Number(row.seats || 1)),
   }));
 }
 

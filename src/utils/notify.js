@@ -2,6 +2,31 @@ const pool = require("../db");
 const { sendPushToUser } = require("./push");
 
 const RIDE_LEVEL_DEDUPED_TYPES = new Set(["ride_reminder", "ride_started_auto"]);
+const RIDE_NOTIFICATION_CHANNEL_ID = "ride-reminder";
+const RIDE_NOTIFICATION_SOUND = "horn.wav";
+const RIDE_NOTIFICATION_TYPES = new Set([
+  "booking",
+  "booking_request",
+  "seat_request",
+  "booking_approved",
+  "booking_rejected",
+  "booking_cancelled",
+  "ride_cancelled",
+  "ride_reminder",
+  "ride_started_auto",
+  "meetup_driver_checked_in",
+  "meetup_rider_checked_in",
+]);
+
+function resolveNotificationDelivery({ type, sound, channelId }) {
+  const normalizedType = String(type || "").trim().toLowerCase();
+  const isRideNotification = RIDE_NOTIFICATION_TYPES.has(normalizedType);
+
+  return {
+    sound: sound || (isRideNotification ? RIDE_NOTIFICATION_SOUND : "default"),
+    channelId: channelId || (isRideNotification ? RIDE_NOTIFICATION_CHANNEL_ID : "default"),
+  };
+}
 
 async function ensureNotificationHiddenColumn() {
   await pool.query(
@@ -117,9 +142,10 @@ exports.createNotification = async (payload) => {
       bookingId = null,
       role = null,
       data = null,
-      sound = "default",
-      channelId = "default",
+      sound = null,
+      channelId = null,
     } = payload || {};
+    const delivery = resolveNotificationDelivery({ type, sound, channelId });
 
     const baseValues = {
       user_id: userId,
@@ -185,8 +211,8 @@ exports.createNotification = async (payload) => {
           screen: "/notifications",
           ...(data && typeof data === "object" ? data : {}),
         },
-        sound,
-        channelId,
+        sound: delivery.sound,
+        channelId: delivery.channelId,
       }).catch((pushErr) => {
         console.error("push send error:", pushErr.message || pushErr);
       });

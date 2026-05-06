@@ -61,7 +61,10 @@ async function sendExpoPushNotification(message) {
   return payload;
 }
 
-async function sendPushToUser(userId, { title, body, data = {}, sound = "default" } = {}) {
+async function sendPushToUser(
+  userId,
+  { title, body, data = {}, sound = "default", channelId = "default" } = {}
+) {
   const token = await getUserPushToken(userId);
   if (!token || !title || !body) {
     return null;
@@ -73,7 +76,7 @@ async function sendPushToUser(userId, { title, body, data = {}, sound = "default
     body,
     sound,
     priority: "high",
-    channelId: "default",
+    channelId,
     data,
   });
 }
